@@ -1,41 +1,87 @@
 import ReactECharts from "echarts-for-react";
 
+const weekLabels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
 export default function DashboardChart() {
   const option = {
+    color: ["#22d3ee", "#a855f7"],
     tooltip: {
       trigger: "axis",
+      backgroundColor: "rgba(15,23,42,0.9)",
+      textStyle: {
+        color: "#f8fafc",
+      },
     },
     legend: {
-      data: ["Sales", "Profit"],
+      data: ["Energi (kWh)", "Efisiensi (%)"],
+      textStyle: {
+        color: "rgba(255,255,255,0.8)",
+      },
+      top: 0,
+    },
+    grid: {
+      left: "3%",
+      right: "3%",
+      bottom: "10%",
+      top: "20%",
+      containLabel: true,
     },
     xAxis: {
       type: "category",
-      data: ["Mon", "Tue", "Wed", "Thu", "Fri"],
+      boundaryGap: false,
+      data: weekLabels,
+      axisLine: {
+        lineStyle: {
+          color: "rgba(255,255,255,0.2)",
+        },
+      },
+      axisLabel: {
+        color: "rgba(255,255,255,0.7)",
+        fontSize: 12,
+      },
     },
-    yAxis: [
-      {
-        type: "value",
-        name: "Sales",
+    yAxis: {
+      type: "value",
+      axisLine: {
+        show: false,
       },
-      {
-        type: "value",
-        name: "Profit",
+      axisLabel: {
+        color: "rgba(255,255,255,0.6)",
       },
-    ],
+      splitLine: {
+        lineStyle: {
+          color: "rgba(255,255,255,0.08)",
+        },
+      },
+    },
     series: [
       {
-        name: "Sales",
-        type: "bar",
-        data: [120, 200, 150, 80, 70],
+      name: "Energi (kWh)",
+        type: "line",
+        smooth: true,
+        areaStyle: {
+          opacity: 0.3,
+        },
+        lineStyle: {
+          width: 3,
+        },
+        symbolSize: 8,
+        data: [4.4, 5.2, 5.8, 6.1, 6.7, 6.4, 6.9],
       },
       {
-        name: "Profit",
+      name: "Efisiensi (%)",
         type: "line",
-        yAxisIndex: 1,
-        data: [30, 50, 45, 20, 25],
+        smooth: true,
+        lineStyle: {
+          width: 2,
+          type: "dashed",
+        },
+        symbol: "diamond",
+        symbolSize: 7,
+        data: [86, 88, 91, 92, 93, 92, 94],
       },
     ],
   };
 
-  return <ReactECharts option={option} style={{ height: 400 }} />;
+  return <ReactECharts option={option} style={{ height: 320 }} />;
 }
