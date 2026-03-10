@@ -1,23 +1,37 @@
 import ReactECharts from "echarts-for-react"
 
-export default function PowerChart(){
-
-const option = {
-  xAxis:{
-    type:"category",
-    data:["1","2","3","4","5"]
-  },
-  yAxis:{
-    type:"value"
-  },
-  series:[
-    {
-      data:[10,20,15,30,40],
-      type:"line"
-    }
-  ]
+interface Props{
+ data:number[]
+ time:string[]
 }
 
-return <ReactECharts option={option} style={{height:300}} />
+export default function PowerChart({data,time}:Props){
+
+const option={
+
+tooltip:{trigger:"axis"},
+
+xAxis:{
+ type:"category",
+ data:time
+},
+
+yAxis:{
+ type:"value",
+ name:"Power kW"
+},
+
+series:[
+ {
+  name:"Power",
+  type:"line",
+  smooth:true,
+  data:data
+ }
+]
+
+}
+
+return <ReactECharts option={option} style={{height:300}}/>
 
 }

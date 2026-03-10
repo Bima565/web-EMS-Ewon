@@ -1,37 +1,58 @@
-import DashboardChart from "../components/DashboardChart";
+import { useEffect,useState } from "react"
+import { getRealtime,getPanels } from "../api/api"
+import PanelCard from "../components/PanelCard"
+import type { Tag, Panel } from "../types/tag"
 
-export default function Dashboard() {
-  return (
-    <div style={{ padding: "20px" }}>
-      <h1 style={{ marginBottom: "20px" }}>Analytics Dashboard</h1>
+export default function Dashboard(){
 
-      {/* Stat Cards */}
-      <div className="stats-grid">
-        <div className="card">
-          <h3>Total Sales</h3>
-          <p className="stat">$12,430</p>
-        </div>
+const [tags,setTags]=useState<Tag[]>([])
+const [panels,setPanels]=useState<Panel[]>([])
 
-        <div className="card">
-          <h3>Total Orders</h3>
-          <p className="stat">1,230</p>
-        </div>
+useEffect(()=>{
 
-        <div className="card">
-          <h3>Customers</h3>
-          <p className="stat">842</p>
-        </div>
+const load=()=>{
 
-        <div className="card">
-          <h3>Revenue</h3>
-          <p className="stat">$8,420</p>
-        </div>
-      </div>
+getRealtime().then(setTags)
+getPanels().then(setPanels)
 
-      {/* Chart */}
-      <div className="card chart-card">
-        <DashboardChart />
-      </div>
-    </div>
-  );
+}
+
+load()
+
+const timer=setInterval(load,2000)
+
+return ()=>clearInterval(timer)
+
+},[])
+
+return(
+
+<div className="dashboard">
+
+<h1>EWON EMS Dashboard</h1>
+
+<div className="panel-container">
+
+{panels.map(p => {
+
+const panelTags = tags.filter(t =>
+  t.tagname.startsWith(p.tagname)
+)
+
+return (
+  <PanelCard
+    key={p.id}
+    title={p.tagdesc}
+    tags={panelTags}
+  />
+)
+
+})}
+
+</div>
+
+</div>
+
+)
+
 }

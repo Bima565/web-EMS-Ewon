@@ -1,29 +1,30 @@
-body {
-  font-family: Inter, system-ui, Arial;
-  background: #f4f6f9;
+@import "tailwindcss";
+
+body{
+ background:#f5f7fb;
+ font-family:Arial;
 }
 
-.stats-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 20px;
-  margin-bottom: 25px;
+.dashboard{
+ padding:20px;
 }
 
-.card {
-  background: white;
-  padding: 20px;
-  border-radius: 12px;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+.panel-container{
+ display:grid;
+ grid-template-columns:repeat(auto-fill,minmax(250px,1fr));
+ gap:20px;
 }
 
-.stat {
-  font-size: 28px;
-  font-weight: bold;
-  margin-top: 10px;
-  color: #2563eb;
+.card{
+ background:white;
+ padding:20px;
+ border-radius:12px;
+ box-shadow:0 4px 10px rgba(0,0,0,0.05);
 }
 
-.chart-card {
-  padding: 30px;
+.panel-grid{
+ display:grid;
+ grid-template-columns:1fr 1fr;
+ gap:6px;
+ margin-top:10px;
 }

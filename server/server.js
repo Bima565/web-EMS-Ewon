@@ -1,12 +1,14 @@
 const express = require("express")
 const mysql = require("mysql2")
 const cors = require("cors")
+const path = require("path")
 
 const app = express()
 
 app.use(cors())
+app.use(express.json())
 
-// koneksi database laragon
+// koneksi database
 const db = mysql.createConnection({
   host: "localhost",
   user: "root",
@@ -14,33 +16,87 @@ const db = mysql.createConnection({
   database: "ewon"
 })
 
-db.connect(err=>{
-  if(err){
-    console.log(err)
-  }else{
-    console.log("MySQL connected")
+db.connect(err => {
+  if (err) {
+    console.log("DB error", err)
+  } else {
+    console.log("Database connected")
   }
 })
 
-// API realtime monitoring
-app.get("/api/realtime",(req,res)=>{
+/* ======================
+   API ENDPOINT
+====================== */
 
-db.query(`
-SELECT tagname, tagvalue, created
-FROM monitoring_tags
-ORDER BY tagname
-`,(err,result)=>{
+// list panel
+app.get("/api/panels", (req, res) => {
 
- if(err){
-   res.json(err)
- }else{
-   res.json(result)
- }
+  db.query(
+    "SELECT id, tagname, tagdesc FROM tagmst",
+    (err, result) => {
+
+      if (err) return res.status(500).json(err)
+
+      res.json(result)
+
+    }
+  )
 
 })
 
+// realtime tag
+app.get("/api/realtime", (req, res) => {
+
+  db.query(
+    "SELECT tagname,tagvalue,created FROM monitoring_tags",
+    (err, result) => {
+
+      if (err) return res.status(500).json(err)
+
+      res.json(result)
+
+    }
+  )
+
 })
 
-app.listen(3000,()=>{
- console.log("API running on port 3000")
+// history power
+app.get("/api/history/:tag", (req,res)=>{
+
+  const tag=req.params.tag
+
+  db.query(
+    "SELECT created,tagvalue FROM datamin WHERE tagname=? ORDER BY created DESC LIMIT 200",
+    [tag],
+    (err,result)=>{
+
+      if(err) return res.status(500).json(err)
+
+      res.json(result)
+
+    }
+  )
+
+})
+
+/* ======================
+   SERVE REACT BUILD
+====================== */
+
+const clientPath = path.join(__dirname, "../dist")
+
+app.use(express.static(clientPath))
+
+app.use((req,res)=>{
+  res.sendFile(path.join(clientPath,"index.html"))
+})
+
+/* ======================
+   START SERVER
+====================== */
+
+const PORT = 3000
+
+app.listen(PORT, () => {
+  console.log("Server running http://localhost:" + PORT)
 })
