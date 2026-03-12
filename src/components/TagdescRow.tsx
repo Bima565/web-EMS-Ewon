@@ -51,20 +51,10 @@ export default function TagdescRow({ panel, tags }: TagdescRowProps) {
     relevantTags.find((t) => t.tagname.includes("VAB"))?.tagvalue ??
     relevantTags.find((t) => t.tagname.includes("P"))?.tagvalue ??
     1650
-  const timelineLabels = [
-    "09:30",
-    "10:00",
-    "10:30",
-    "11:00",
-    "11:30",
-    "12:00",
-    "12:30",
-    "13:00",
-    "13:30",
-    "14:00",
-    "14:30",
-    "15:00",
-  ]
+  const timelineLabels = Array.from({ length: 24 }, (_, i) => {
+    const hour = String(i).padStart(2, "0")
+    return `${hour}:00`
+  })
   const values = timelineLabels.map((_, idx) => {
     const offset = Math.sin(idx / 2) * 8 + (idx % 3 === 0 ? 5 : -3)
     return Number((baseValue + offset).toFixed(2))

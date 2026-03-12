@@ -5,6 +5,26 @@ const path = require("path")
 
 const app = express()
 
+const PARAM_URL = "http://192.168.100.239/rcgi.bin/ParamForm?AST_Param=$dtIV$flA$ftT"
+const PARAM_AUTH = `Basic ${Buffer.from("admin:Admin123").toString("base64")}`
+
+const parseParamLines = (text) =>
+  text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('"TagId"'))
+    .map((line) => {
+      const cols = line.split(";").map((col) => col.replace(/(^"|"$)/g, ""))
+      return {
+        TagId: Number(cols[0]),
+        TagName: cols[1],
+        Value: Number(cols[2]),
+        AlStatus: Number(cols[3]),
+        AlType: Number(cols[4]),
+        Quality: Number(cols[5]),
+      }
+    })
+
 app.use(cors())
 app.use(express.json())
 
@@ -77,6 +97,34 @@ app.get("/api/history/:tag", (req,res)=>{
     }
   )
 
+})
+
+app.get("/api/param-values", async (req, res) => {
+  try {
+    const response = await fetch(PARAM_URL, {
+      headers: {
+        Authorization: PARAM_AUTH,
+      },
+    })
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => "unable to read body")
+      return res.status(response.status).json({
+        message: "Gagal mengambil data param dari Ewon",
+        statusText: response.statusText,
+        detail: body,
+      })
+    }
+
+    const text = await response.text()
+    const data = parseParamLines(text)
+    res.json(data)
+  } catch (error) {
+    res.status(500).json({
+      message: "Terjadi kesalahan saat menghubungi Ewon",
+      error: error?.message ?? "unknown error",
+    })
+  }
 })
 
 /* ======================

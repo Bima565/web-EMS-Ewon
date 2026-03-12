@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from "react"
+﻿import { useEffect, useMemo, useState } from "react"
 import { getRealtime, getPanels } from "../api/api"
 import DashboardChart from "../components/DashboardChart"
+import ParamChart from "../components/ParamChart"
 import type { Panel, Tag } from "../types/tag"
 
 const trafficMetrics = [
@@ -65,7 +66,7 @@ export default function Dashboard() {
           </p>
         </div>
 
-        <section className="grid gap-6 lg:grid-cols-[1.35fr_0.65fr]">
+      <section className="grid gap-6 lg:grid-cols-[1.35fr_0.65fr]">
           <div className="rounded-[32px] border border-white/10 bg-gradient-to-br from-slate-900/70 to-slate-900/40 p-6 shadow-[0_30px_60px_rgba(15,23,42,0.55)]">
             <div className="flex items-center justify-between">
               <div>
@@ -121,6 +122,10 @@ export default function Dashboard() {
             </div>
           </div>
         </section>
+
+        <div>
+          <ParamChart />
+        </div>
       </section>
     </main>
   )
