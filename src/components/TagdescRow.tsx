@@ -1,4 +1,4 @@
-import ReactECharts from "echarts-for-react"
+﻿import ReactECharts from "echarts-for-react"
 import type { Panel, Tag } from "../types/tag"
 
 type MetricDetail = {
@@ -14,29 +14,29 @@ const metricDetails: MetricDetail[] = [
     label: "Voltase",
     code: "VAB",
     unit: "V",
-    gradient: "from-emerald-500/70 to-emerald-600/40",
+    gradient: "linear-gradient(135deg, rgba(16,185,129,0.7), rgba(5,150,105,0.4))",
     color: "#34d399",
   },
   {
     label: "Ampere",
     code: "AR",
     unit: "A",
-    gradient: "from-cyan-500/70 to-cyan-600/40",
-    color: "#06b6d4",
+    gradient: "linear-gradient(135deg, rgba(6,182,212,0.7), rgba(8,145,178,0.4))",
+    color: "#22d3ee",
   },
   {
     label: "Daya",
     code: "P",
     unit: "kW",
-    gradient: "from-indigo-500/70 to-indigo-600/40",
-    color: "#6366f1",
+    gradient: "linear-gradient(135deg, rgba(99,102,241,0.7), rgba(79,70,229,0.4))",
+    color: "#a5b4fc",
   },
   {
     label: "Frekuensi",
     code: "F",
     unit: "Hz",
-    gradient: "from-amber-500/70 to-amber-500/30",
-    color: "#fbbf24",
+    gradient: "linear-gradient(135deg, rgba(245,158,11,0.7), rgba(245,158,11,0.3))",
+    color: "#fcd34d",
   },
 ]
 
@@ -59,6 +59,12 @@ export default function TagdescRow({ panel, tags }: TagdescRowProps) {
     const offset = Math.sin(idx / 2) * 8 + (idx % 3 === 0 ? 5 : -3)
     return Number((baseValue + offset).toFixed(2))
   })
+  const normalizedTag = panel.tagname.toLowerCase()
+  const panelGroup = normalizedTag.includes("f1")
+    ? "F1"
+    : normalizedTag.includes("f2")
+    ? "F2"
+    : "Panel"
   const chartOption = {
     tooltip: {
       trigger: "axis",
@@ -120,17 +126,21 @@ export default function TagdescRow({ panel, tags }: TagdescRowProps) {
   }
 
   return (
-    <div className="relative overflow-hidden rounded-[28px] border border-cyan-400/40 bg-gradient-to-r from-[#0f172a] via-[#0f172a]/70 to-[#0d3b66] p-4 shadow-[0_40px_60px_rgba(2,6,23,0.55)]">
-      <div className="rounded-2xl bg-slate-900/70 p-2">
-        <ReactECharts option={chartOption} style={{ height: 180 }} />
+    <div className="tagdesc-row">
+      <div className="tagdesc-row-content">
+        <div className="tagdesc-row-header">
+          <span>{panelGroup}</span>
+          <span className="tagdesc-row-tagname">{panel.tagname}</span>
+        </div>
+        <div className="tagdesc-chart-wrapper">
+          <ReactECharts option={chartOption} style={{ height: 180 }} />
+        </div>
+        <div className="tagdesc-row-description">
+          <p className="tagdesc-row-title">{panel.tagdesc}</p>
+          <p className="tagdesc-row-status">Status real-time</p>
+        </div>
       </div>
-      <div className="mt-4 space-y-1">
-        <p className="text-sm font-semibold text-white">{panel.tagdesc}</p>
-        <p className="text-xs uppercase tracking-[0.4em] text-cyan-200">
-          UJi
-        </p>
-      </div>
-      <div className="mt-6 grid grid-cols-2 gap-3">
+      <div className="tagdesc-metrics-grid">
         {metricDetails.map((metric) => {
           const tag = relevantTags.find((t) => t.tagname.includes(metric.code))
           const value =
@@ -140,11 +150,12 @@ export default function TagdescRow({ panel, tags }: TagdescRowProps) {
           return (
             <div
               key={metric.code}
-              className={`rounded-2xl p-4 text-white shadow-2xl shadow-slate-900/40 bg-gradient-to-br ${metric.gradient}`}
+              className="tagdesc-metric-card"
+              style={{ backgroundImage: metric.gradient }}
             >
-              <p className="text-[0.65rem] uppercase tracking-[0.4em]">{metric.label}</p>
-              <p className="text-2xl font-semibold">
-                {value} <span className="text-sm font-normal">{metric.unit}</span>
+              <p className="tagdesc-metric-label">{metric.label}</p>
+              <p className="tagdesc-metric-value" style={{ color: metric.color }}>
+                {value} <span className="tagdesc-metric-unit">{metric.unit}</span>
               </p>
             </div>
           )

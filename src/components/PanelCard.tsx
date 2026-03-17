@@ -6,6 +6,13 @@ interface Props {
   tags: Tag[]
 }
 
+type TooltipAxisParam = {
+  dataIndex: number
+  marker: string
+  seriesName: string
+  value: number
+}
+
 const metricMap = [
   { label: "Tegangan", key: "VAB", unit: "V" },
   { label: "Arus", key: "AR", unit: "A" },
@@ -32,11 +39,11 @@ export default function PanelCard({ title, tags }: Props) {
       textStyle: {
         color: "#f8fafc",
       },
-      formatter: (params: any) => {
-        const point = params[0]
-        const data = chartPoints[point.dataIndex]
-        return `${data.label}<br/>${point.marker} ${point.seriesName}: ${point.value} ${data.unit}`
-      },
+    formatter: (params: TooltipAxisParam[]) => {
+      const point = params[0]
+      const data = chartPoints[point.dataIndex]
+      return `${data.label}<br/>${point.marker} ${point.seriesName}: ${point.value} ${data.unit}`
+    },
     },
     grid: {
       top: 10,

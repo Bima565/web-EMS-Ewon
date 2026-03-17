@@ -1,0 +1,62 @@
+.comparison-card {
+  border-radius: 28px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: linear-gradient(145deg, rgba(15, 23, 42, 0.95), rgba(2, 6, 23, 0.9));
+  padding: 1.75rem;
+  box-shadow: 0 30px 60px rgba(0, 0, 0, 0.6);
+  margin-top: 1.75rem;
+}
+
+.comparison-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 1rem;
+}
+
+.comparison-card-title {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #fff;
+}
+
+.comparison-card-subtitle {
+  margin: 0.35rem 0 0;
+  font-size: 0.75rem;
+  letter-spacing: 0.35em;
+  text-transform: uppercase;
+  color: #94a3b8;
+}
+
+.comparison-card-status {
+  font-size: 0.7rem;
+  letter-spacing: 0.35em;
+  text-transform: uppercase;
+}
+
+.comparison-card-status--loading {
+  color: #94a3b8;
+}
+
+.comparison-card-status--idle {
+  color: #34d399;
+}
+
+.comparison-card-status--error {
+  color: #f97316;
+}
+
+.comparison-card-chart {
+  margin-top: 1.25rem;
+}
+
+.comparison-card-error {
+  margin-top: 1.25rem;
+  border-radius: 18px;
+  border: 1px solid rgba(248, 113, 113, 0.4);
+  background: rgba(248, 113, 113, 0.12);
+  color: #fecdd3;
+  padding: 1rem;
+  font-size: 0.9rem;
+}
