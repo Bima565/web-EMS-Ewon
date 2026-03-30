@@ -1,26 +1,18 @@
 import { useEffect, useMemo, useState } from "react"
 import ReactECharts from "echarts-for-react"
-import { getHistory } from "../api/api"
+import { getParamValues } from "../api/api"
 import "./style-ComparisonKwhChart.css"
 
-const FETCH_INTERVAL_MS = 60 * 1000
+const FETCH_INTERVAL_MS = 5000
 const WINDOW_MS = 5 * 60 * 1000
-
-type HistoryRow = {
-  created: string
-  tagvalue: number
-}
+const HISTORY_WINDOW_MS = WINDOW_MS * 2
+const PARAM_TAG = "pm139KWH"
+const STORAGE_KEY = "web-ewon:param-chart-live-history"
 
 type ChartPoint = {
   timestamp: number
   value: number
 }
-
-type TooltipParam = Array<{
-  marker?: string
-  seriesName?: string
-  value?: [number, number]
-}>
 
 const formatTimestamp = (value: number) =>
   new Date(value).toLocaleTimeString("id-ID", {
@@ -32,64 +24,131 @@ const formatTimestamp = (value: number) =>
 const buildSeries = (points: ChartPoint[]) =>
   points.map((row) => [row.timestamp, Number(row.value.toFixed?.(3) ?? row.value)])
 
-export default function ComparisonKwhChart() {
-  const [currentHour, setCurrentHour] = useState<ChartPoint[]>([])
-  const [previousHour, setPreviousHour] = useState<ChartPoint[]>([])
-  const [status, setStatus] = useState<"loading" | "idle" | "error">("loading")
+const readStoredHistory = (): ChartPoint[] => {
+  if (typeof window === "undefined") return []
+  const storedText = window.localStorage.getItem(STORAGE_KEY)
+  if (!storedText) return []
 
-  const load = async () => {
-    setStatus("loading")
-    try {
-      const raw = await getHistory("pm139KWH")
-      const now = Date.now()
-      const rows: HistoryRow[] = Array.isArray(raw)
-        ? raw
-            .map((row) => ({
-              created: String(row?.created ?? ""),
-              tagvalue: Number(row?.tagvalue ?? ""),
-            }))
-            .filter(
-              (entry) =>
-                entry.created.length > 0 && Number.isFinite(entry.tagvalue),
-            )
-        : []
-
-      const currentStart = now - WINDOW_MS
-      const previousStart = currentStart - WINDOW_MS
-
-      const currentPoints: ChartPoint[] = []
-      const previousPoints: ChartPoint[] = []
-
-      for (const entry of rows) {
-        const timestamp = new Date(entry.created).getTime()
-        if (timestamp >= currentStart) {
-          currentPoints.push({ timestamp, value: entry.tagvalue })
-        } else if (timestamp >= previousStart) {
-          previousPoints.push({ timestamp: timestamp + WINDOW_MS, value: entry.tagvalue })
-        }
-      }
-
-      setCurrentHour(currentPoints.sort((a, b) => a.timestamp - b.timestamp))
-      setPreviousHour(previousPoints.sort((a, b) => a.timestamp - b.timestamp))
-      setStatus("idle")
-    } catch (error) {
-      console.error("comparison chart", error)
-      setStatus("error")
-    }
+  try {
+    const parsed = JSON.parse(storedText) as Record<string, ChartPoint[]>
+    const cutoff = Date.now() - HISTORY_WINDOW_MS
+    return (parsed[PARAM_TAG] ?? [])
+      .filter(
+        (entry) =>
+          entry &&
+          Number.isFinite(entry.timestamp) &&
+          Number.isFinite(entry.value) &&
+          entry.timestamp >= cutoff,
+      )
+  } catch (error) {
+    console.error("failed parse history", error)
+    return []
   }
+}
+
+const pruneHistory = (entries: ChartPoint[], now: number) =>
+  entries.filter((entry) => entry.timestamp >= now - HISTORY_WINDOW_MS)
+
+const buildOption = (points: ChartPoint[], title: string) => ({
+  title: {
+    text: title,
+    left: "center",
+    textStyle: { color: "#0f172a", fontSize: 12 },
+  },
+  tooltip: {
+    trigger: "axis",
+    formatter: (params: any) => {
+      if (!Array.isArray(params)) return ""
+      return params
+        .map(
+          (item) =>
+            `${item.marker} ${item.value?.[1]?.toFixed?.(3) ?? item.value?.[1]} kWh`,
+        )
+        .join("<br/>")
+    },
+  },
+  grid: {
+    left: "5%",
+    right: "5%",
+    top: "20%",
+    bottom: "15%",
+    containLabel: true,
+  },
+  xAxis: {
+    type: "time",
+    axisLabel: {
+      formatter: formatTimestamp,
+    },
+  },
+yAxis: {
+  type: "value",
+  scale: true,
+  min: (v: any) => {
+    const range = Math.max(v.max - v.min, 0.05)
+    return v.min - range * 0.2
+  },
+  max: (v: any) => {
+    const range = Math.max(v.max - v.min, 0.05)
+    return v.max + range * 0.2
+  },
+},
+  series: [
+    {
+      type: "line",
+      smooth: true,
+      showSymbol: false,
+      data: buildSeries(points),
+    },
+  ],
+})
+
+const getDelta = (points: ChartPoint[]) => {
+  if (points.length < 2) return 0
+  return points[points.length - 1].value - points[0].value
+}
+
+export default function ComparisonKwhChart() {
+  const [history, setHistory] = useState<ChartPoint[]>(readStoredHistory)
+  const [status, setStatus] = useState<"loading" | "idle" | "error">("loading")
+  const [lastSync, setLastSync] = useState<string>("—")
 
   useEffect(() => {
     let mounted = true
-    const refresh = async () => {
+
+    const load = async (showLoading = false) => {
       if (!mounted) return
-      await load()
+      if (showLoading) setStatus("loading")
+
+      try {
+        const params = await getParamValues()
+        if (!mounted) return
+
+        const match = params.find(
+          (p) => p.TagName.toLowerCase() === PARAM_TAG.toLowerCase(),
+        )
+
+        if (!match || !Number.isFinite(match.Value)) {
+          throw new Error("nilai tidak valid")
+        }
+
+        const timestamp = Date.now()
+
+        setHistory((prev) => {
+          const next = [...prev, { timestamp, value: match.Value }]
+          return pruneHistory(next, timestamp)
+        })
+
+        setLastSync(formatTimestamp(timestamp))
+        setStatus("idle")
+      } catch (err) {
+        console.error(err)
+        if (mounted) setStatus("error")
+      }
     }
 
-    refresh()
-    const interval = setInterval(() => {
-      if (!mounted) return
-      load()
-    }, FETCH_INTERVAL_MS)
+    load(true)
+
+    const interval = setInterval(() => load(), FETCH_INTERVAL_MS)
 
     return () => {
       mounted = false
@@ -97,121 +156,73 @@ export default function ComparisonKwhChart() {
     }
   }, [])
 
-  const option = useMemo(() => {
-      const baseData = buildSeries(currentHour)
-      const previousData = buildSeries(previousHour)
+  const { currentPoints, previousPoints } = useMemo(() => {
+    const now = Date.now()
+    const currentStart = now - WINDOW_MS
+    const previousStart = currentStart - WINDOW_MS
 
-    return {
-      tooltip: {
-        trigger: "axis",
-        formatter: (params: TooltipParam) => {
-          if (!Array.isArray(params)) return ""
-          return params
-            .map(
-              (item) =>
-                `${item.marker} ${item.seriesName} <strong>${item.value?.[1]?.toFixed?.(3) ??
-                  item.value?.[1]}</strong> kWh`,
-            )
-            .join("<br/>")
-        },
-      },
-        legend: {
-          data: ["5 menit terakhir", "5 menit sebelumnya"],
-          textStyle: {
-            color: "#0f172a",
-          },
-          bottom: 10,
-        },
-      grid: {
-        left: "3%",
-        right: "3%",
-        top: "15%",
-        bottom: "20%",
-        containLabel: true,
-      },
-      xAxis: {
-        type: "time",
-        axisLine: {
-          lineStyle: {
-            color: "rgba(255,255,255,0.3)",
-          },
-        },
-        axisLabel: {
-          color: "rgba(255,255,255,0.7)",
-          formatter: formatTimestamp,
-        },
-        splitLine: {
-          show: false,
-        },
-      },
-      yAxis: {
-        type: "value",
-        min: 0,
-        axisLine: {
-          lineStyle: {
-            color: "rgba(255,255,255,0.2)",
-          },
-        },
-        axisLabel: {
-          color: "rgba(255,255,255,0.6)",
-        },
-        splitLine: {
-          lineStyle: {
-            color: "rgba(255,255,255,0.05)",
-          },
-        },
-      },
-      series: [
-        {
-          name: "Jam ini",
-          type: "line",
-          smooth: true,
-          lineStyle: {
-            width: 2,
-            color: "#38bdf8",
-          },
-          areaStyle: {
-            opacity: 0.2,
-            color: "#38bdf8",
-          },
-          data: baseData,
-        },
-        {
-          name: "Jam lalu",
-          type: "line",
-          smooth: true,
-          lineStyle: {
-            width: 2,
-            type: "dashed",
-            color: "#f97316",
-          },
-          data: previousData,
-        },
-      ],
-    }
-  }, [currentHour, previousHour])
+    const currentPoints = history
+      .filter((e) => e.timestamp >= currentStart)
+      .sort((a, b) => a.timestamp - b.timestamp)
+
+    const previousPoints = history
+      .filter((e) => e.timestamp >= previousStart && e.timestamp < currentStart)
+      .sort((a, b) => a.timestamp - b.timestamp)
+
+    return { currentPoints, previousPoints }
+  }, [history])
+
+  const statusMessage =
+    status === "loading"
+      ? "Memuat..."
+      : status === "error"
+      ? "Gagal ambil data"
+      : lastSync === "—"
+      ? "Menunggu data"
+      : `Last sync: ${lastSync}`
 
   return (
     <section className="comparison-card">
       <header className="comparison-card-header">
         <div>
-          <p className="comparison-card-title">Konsumsi KWh perbandingan</p>
-          <p className="comparison-card-subtitle">5 menit terakhir vs 5 menit sebelumnya</p>
+          <p className="comparison-card-title">Konsumsi KWh</p>
+          <p className="comparison-card-subtitle">
+            5 menit terakhir vs 5 menit sebelumnya
+          </p>
         </div>
         <span className={`comparison-card-status comparison-card-status--${status}`}>
-          {status === "loading"
-            ? "Memuat..."
-            : status === "error"
-            ? "Tidak bisa mengambil data"
-            : "Terbarui setiap menit"}
+          {statusMessage}
         </span>
       </header>
+
       {status === "error" ? (
-        <div className="comparison-card-error">Gagal memuat data historis.</div>
+        <div className="comparison-card-error">Gagal memuat data</div>
       ) : (
-        <div className="comparison-card-chart">
-          <ReactECharts option={option} style={{ height: 260, width: "100%" }} />
-        </div>
+        <>
+          {/* DELTA INFO */}
+          <div style={{ display: "flex", justifyContent: "space-around", marginBottom: 10 }}>
+            <div>
+              <strong>5 menit sebelumnya</strong>
+              <p>{getDelta(previousPoints).toFixed(3)} kWh</p>
+            </div>
+            <div>
+              <strong>5 menit terakhir</strong>
+              <p>{getDelta(currentPoints).toFixed(3)} kWh</p>
+            </div>
+          </div>
+
+          {/* 2 CHART */}
+          <div style={{ display: "flex", gap: 12 }}>
+            <ReactECharts
+              option={buildOption(previousPoints, "5 Menit Sebelumnya")}
+              style={{ height: 260, width: "50%" }}
+            />
+            <ReactECharts
+              option={buildOption(currentPoints, "5 Menit Terakhir")}
+              style={{ height: 260, width: "50%" }}
+            />
+          </div>
+        </>
       )}
     </section>
   )

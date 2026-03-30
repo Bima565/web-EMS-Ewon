@@ -8,11 +8,14 @@
 }
 
 .dashboard-body {
+  max-width: 1400px;   /* ini kunci utama */
+  margin: 0 auto;
+  width: 100%;
   flex: 1;
   display: flex;
   flex-direction: column;
   gap: 2.5rem;
-  padding: 2.5rem 1.5rem 3rem;
+  padding: 1.5rem 1rem 2rem;
 }
 
 .dashboard-intro {
