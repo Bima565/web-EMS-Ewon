@@ -11,8 +11,8 @@ const navItems = [
 
 function AppLayout() {
   const location = useLocation()
-  const routePath = location.hash.replace("#", "") || "/dashboard"
-  const showHeader = routePath === "/dashboard"
+  const normalizedPath = location.pathname.replace(/\/$/, "") || "/dashboard"
+  const showHeader = normalizedPath === "/dashboard"
 
   return (
     <div className="app-shell">
