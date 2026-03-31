@@ -29,20 +29,34 @@ app.use(cors())
 app.use(express.json())
 
 // koneksi database
-const db = mysql.createConnection({
+const dbConfig = {
   host: "localhost",
   user: "root",
   password: "",
-  database: "ewon"
+}
+
+const db = mysql.createConnection({
+  ...dbConfig,
+  database: "ewon",
 })
 
-db.connect(err => {
-  if (err) {
-    console.log("DB error", err)
-  } else {
-    console.log("Database connected")
-  }
+const logsDb = mysql.createConnection({
+  ...dbConfig,
+  database: "ewon-logs",
 })
+
+const connectTo = (connection, name) => {
+  connection.connect((err) => {
+    if (err) {
+      console.log(`${name} error`, err)
+    } else {
+      console.log(`${name} connected`)
+    }
+  })
+}
+
+connectTo(db, "Database")
+connectTo(logsDb, "Logs database")
 
 /* ======================
    API ENDPOINT
