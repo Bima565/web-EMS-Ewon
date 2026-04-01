@@ -93,14 +93,10 @@ export default function DashboardChart() {
   }, [])
 
   const chartOption = useMemo(() => {
-    const sortedHistory = [...history].sort(
-      (a, b) => a.timestamp.getTime() - b.timestamp.getTime(),
-    )
-    const hasData = sortedHistory.some((entry) =>
+    const labels = history.map((entry) => entry.label)
+    const hasData = history.some((entry) =>
       LIVE_METRICS.some((metric) => entry.values[metric.tag] != null),
     )
-    const latestTimestamp = sortedHistory.at(-1)?.timestamp.getTime() ?? Date.now()
-    const minTimestamp = latestTimestamp - ONE_HOUR_MS
 
     return {
       tooltip: {
@@ -148,10 +144,9 @@ export default function DashboardChart() {
         containLabel: true,
       },
       xAxis: {
-        type: "time",
+        type: "category",
         boundaryGap: false,
-        min: minTimestamp,
-        max: latestTimestamp,
+        data: labels,
         axisLine: {
           lineStyle: {
             color: "rgba(148,163,184,0.3)",
@@ -160,13 +155,6 @@ export default function DashboardChart() {
         axisLabel: {
           color: "rgba(148,163,184,0.9)",
           fontSize: 11,
-          formatter: (value: number) =>
-            new Date(value).toLocaleTimeString("id-ID", {
-              hour: "2-digit",
-              minute: "2-digit",
-              second: "2-digit",
-              hour12: false,
-            }),
         },
         splitLine: {
           show: false,
@@ -197,7 +185,7 @@ export default function DashboardChart() {
           color: metric.color,
         },
         areaStyle:
-          hasData && sortedHistory.length > 0
+          hasData && history.length > 0
             ? {
                 opacity: 0.2,
                 color: metric.fill,
@@ -206,10 +194,7 @@ export default function DashboardChart() {
         emphasis: {
           focus: "series",
         },
-        data: sortedHistory.map((entry) => [
-          entry.timestamp.getTime(),
-          entry.values[metric.tag],
-        ]),
+        data: history.map((entry) => entry.values[metric.tag]),
       })),
     }
   }, [history])
