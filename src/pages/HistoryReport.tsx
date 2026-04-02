@@ -40,6 +40,22 @@ type HourlyPoint = [number, number]
 const API_BASE = "http://localhost:3000"
 const WEEKLY_REFRESH_MS = 5 * 60 * 1000
 const DAILY_REFRESH_MS = 30 * 1000
+const WEEKDAY_ROTATION_START = "Kamis"
+
+const normalizeWeeklyData = (entries: WeeklyDay[]) => {
+  if (!entries.length) return entries
+  const sorted = [...entries].sort(
+    (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
+  )
+  const pivot = sorted.findIndex((day) => day.label === WEEKDAY_ROTATION_START)
+  if (pivot <= 0) return sorted
+  return [...sorted.slice(pivot), ...sorted.slice(0, pivot)]
+}
+
+const formatWeeklyValue = (value: number | null) =>
+  value != null
+    ? value.toLocaleString("id-ID", { maximumFractionDigits: 4 })
+    : "-"
 
 export default function HistoryReport() {
   const [weekData, setWeekData] = useState<WeeklyDay[]>([])
@@ -105,8 +121,9 @@ export default function HistoryReport() {
         return (await res.json()) as WeeklyResponse
       })
       .then((data) => {
-        setWeekData(data.week ?? [])
-        setSelectedDay((prev) => prev || (data.week.at(-1)?.date ?? ""))
+        const normalized = normalizeWeeklyData(data.week ?? [])
+        setWeekData(normalized)
+        setSelectedDay((prev) => prev || (normalized.at(-1)?.date ?? ""))
       })
       .catch((err) => {
         console.error(err)
@@ -122,6 +139,40 @@ export default function HistoryReport() {
     const timer = setInterval(fetchWeeklyData, WEEKLY_REFRESH_MS)
     return () => clearInterval(timer)
   }, [fetchWeeklyData])
+
+  const weeklyMaxValue = useMemo(() => {
+    const values: number[] = []
+    weekData.forEach((day) => {
+      TRACKED_TAGS.forEach((tag) => {
+        const val = day.stats[tag]?.last
+        if (typeof val === "number" && Number.isFinite(val)) {
+          values.push(val)
+        }
+      })
+    })
+    return values.length ? Math.max(...values) : 1
+  }, [weekData])
+
+  const weeklyTableRows = useMemo(
+    () =>
+      weekData.map((day) => {
+        const tagDetails = TRACKED_TAGS.map((tag) => ({
+          tag,
+          value: day.stats[tag]?.last ?? null,
+        }))
+        const numericValues = tagDetails
+          .map((entry) => entry.value)
+          .filter((value): value is number => Number.isFinite(value))
+        const average = numericValues.length
+          ? numericValues.reduce((acc, value) => acc + value, 0) / numericValues.length
+          : 0
+        const progress = weeklyMaxValue
+          ? Math.round(Math.min(100, (average / weeklyMaxValue) * 100))
+          : 0
+        return { day, tagDetails, average, progress }
+      }),
+    [weekData, weeklyMaxValue],
+  )
 
   const fetchDayDetail = useCallback(
     (date: string, force = false) => {
@@ -167,72 +218,9 @@ export default function HistoryReport() {
     setSelectedDay(date)
   }
 
-  const weeklyChartOption = useMemo(() => {
-    if (!weekData.length) return null
-    const categories = weekData.map(
-      (day) => `${day.label} ${day.date.slice(5).replace("-", "/")}`,
-    )
-    const series = TRACKED_TAGS.map((tag) => ({
-      name: tag,
-      type: "line",
-      smooth: true,
-      connectNulls: false,
-      data: weekData.map((day) => day.stats[tag]?.last ?? null),
-      emphasis: {
-        focus: "series",
-      },
-    }))
+  const dailyDetail = selectedDay ? dailyCache[selectedDay] : undefined
 
-    return {
-      tooltip: {
-        trigger: "axis",
-        formatter: (params: any) => {
-          if (!Array.isArray(params)) return ""
-          const header = `${params[0]?.axisValue ?? ""}<br/>`
-          const lines = params
-            .map((item: any) => {
-              const val = item?.data ?? "—"
-              return `${item.marker} ${item.seriesName}: ${
-                typeof val === "number" ? val.toLocaleString("id-ID", { maximumFractionDigits: 4 }) : "—"
-              }`
-            })
-            .join("<br/>")
-          return header + lines
-        },
-      },
-      legend: {
-        data: TRACKED_TAGS,
-        top: 0,
-        textStyle: {
-          color: "rgba(248, 250, 252, 0.9)",
-        },
-      },
-      grid: {
-        left: "3%",
-        right: "3%",
-        bottom: "5%",
-        top: "12%",
-        containLabel: true,
-      },
-      xAxis: {
-        type: "category",
-        data: categories,
-        axisLine: { lineStyle: { color: "rgba(148, 163, 184, 0.6)" } },
-        axisLabel: { color: "rgba(248, 250, 252, 0.8)" },
-      },
-      yAxis: {
-        type: "value",
-        axisLine: { show: false },
-        axisLabel: { color: "rgba(248, 250, 252, 0.8)" },
-        splitLine: { lineStyle: { color: "rgba(148, 163, 184, 0.2)" } },
-      },
-      series,
-    }
-  }, [weekData])
-
-const dailyDetail = selectedDay ? dailyCache[selectedDay] : undefined
-
-const hourlyChartOption = useMemo(() => {
+  const hourlyChartOption = useMemo(() => {
   if (!dailyDetail) return null
 
   const buildSeries = (): Array<{
@@ -303,9 +291,9 @@ const hourlyChartOption = useMemo(() => {
         const header = formatTime(params[0]?.axisValue ?? 0)
         const lines = params
           .map((item: any) => {
-            const val = item?.data?.[1] ?? "—"
+            const val = item?.data?.[1] ?? "â€”"
             return `${item.marker} ${item.seriesName}: ${
-              typeof val === "number" ? val.toLocaleString("id-ID", { maximumFractionDigits: 4 }) : "—"
+              typeof val === "number" ? val.toLocaleString("id-ID", { maximumFractionDigits: 4 }) : "â€”"
             }`
           })
           .join("<br/>")
@@ -395,7 +383,7 @@ const hourlyChartOption = useMemo(() => {
                   <p className="history-live-value">
                     {param.value != null
                       ? param.value.toLocaleString("id-ID", { maximumFractionDigits: 4 })
-                      : "—"}
+                      : "â€”"}
                   </p>
                 </article>
               ))
@@ -422,8 +410,101 @@ const hourlyChartOption = useMemo(() => {
           </span>
         </header>
         <div className="history-chart-wrapper">
-          {weeklyChartOption ? (
-            <ReactECharts option={weeklyChartOption} style={{ height: 360 }} />
+          {weekData.length ? (
+            <div className="history-week-table-wrapper">
+              <div className="history-week-table">
+                <div className="history-week-table-header">
+                  <div>
+                    <p className="history-week-table-meta">Summary mingguan</p>
+                    <h2 className="history-week-table-title">Rekap seminggu</h2>
+                    <p className="history-week-table-note">
+                      Setiap baris menampilkan nilai terakhir per tag dengan progres ke atas.
+                    </p>
+                  </div>
+                  <div className="history-week-table-actions">
+                    <button type="button" className="history-week-btn history-week-btn--ghost">
+                      Filter
+                    </button>
+                    <button type="button" className="history-week-btn history-week-btn--ghost">
+                      Settings
+                    </button>
+                    <button type="button" className="history-week-btn history-week-btn--solid">
+                      Tambah data
+                    </button>
+                  </div>
+                </div>
+                <div className="history-week-table-body">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Hari</th>
+                        <th>Rata-rata</th>
+                        <th>Tag aktif</th>
+                        <th>Progress</th>
+                        <th aria-label="Aksi"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {weeklyTableRows.map(({ day, tagDetails, average, progress }) => (
+                        <tr className="history-week-table-row" key={day.date}>
+                          <td>
+                            <div className="history-week-cell history-week-day">
+                              <strong>{day.label}</strong>
+                              <span>{day.date}</span>
+                            </div>
+                          </td>
+                          <td>
+                            <div className="history-week-cell history-week-average">
+                              <strong>{formatWeeklyValue(average)}</strong>
+                              <small>avg nilai</small>
+                            </div>
+                          </td>
+                          <td>
+                            <div className="history-week-cell history-week-tags">
+                              <div className="history-week-tags-columns">
+                                {[
+                                  tagDetails.slice(0, Math.ceil(tagDetails.length / 2)),
+                                  tagDetails.slice(Math.ceil(tagDetails.length / 2)),
+                                ].map((column, index) => (
+                                  <div className="history-week-tag-column" key={`${day.date}-col-${index}`}>
+                                    {column.map((entry) => (
+                                      <div className="history-week-tag-card" key={`${day.date}-${entry.tag}`}>
+                                        <span className="history-week-tag-card-label">{entry.tag}</span>
+                                        <strong className="history-week-tag-card-value">
+                                          {formatWeeklyValue(entry.value)}
+                                        </strong>
+                                      </div>
+                                    ))}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          </td>
+                          <td>
+                            <div className="history-week-cell history-week-progress">
+                              <div className="history-progress-bar">
+                                <span
+                                  className="history-progress-fill"
+                                  style={{ width: `${progress}%` }}
+                                />
+                              </div>
+                              <strong>{progress}%</strong>
+                            </div>
+                          </td>
+                          <td>
+                            <div className="history-week-cell history-week-actions">
+                              <button type="button" className="history-week-action">
+                                ⋮
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
           ) : (
             <div className="history-chart-empty">
               {weekError || "Menunggu data untuk grafik mingguan."}
@@ -460,7 +541,7 @@ const hourlyChartOption = useMemo(() => {
                     <strong className="history-day-metric-value">
                       {metric.value != null
                         ? metric.value.toLocaleString("id-ID", { maximumFractionDigits: 4 })
-                        : "—"}
+                        : "â€”"}
                     </strong>
                   </div>
                 ))}

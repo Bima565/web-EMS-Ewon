@@ -95,6 +95,297 @@
   margin-top: 1.5rem;
 }
 
+.history-week-table-wrapper {
+  overflow-x: auto;
+  margin-top: 1.5rem;
+}
+
+.history-week-table {
+  width: min(100%, 1100px);
+  margin: 0 auto;
+  border-radius: 28px;
+  background: radial-gradient(circle at top right, rgba(59, 130, 246, 0.12), transparent 45%),
+    rgba(15, 23, 42, 0.95);
+  border: 1px solid rgba(59, 130, 246, 0.4);
+  box-shadow: 0 25px 50px rgba(2, 6, 23, 0.45);
+  padding: 1.75rem 2rem;
+  color: #f8fafc;
+}
+
+.history-week-table-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.history-week-table-meta {
+  margin: 0;
+  font-size: 0.75rem;
+  letter-spacing: 0.4em;
+  color: rgba(59, 130, 246, 0.7);
+  text-transform: uppercase;
+}
+
+.history-week-table-title {
+  margin: 0.25rem 0 0;
+  font-size: 1.75rem;
+}
+
+.history-week-table-note {
+  margin: 0.35rem 0 0;
+  color: rgba(248, 250, 252, 0.7);
+  font-size: 0.9rem;
+}
+
+.history-week-table-actions {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.history-week-btn {
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  padding: 0.45rem 1rem;
+  background: transparent;
+  color: #f8fafc;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.history-week-btn--solid {
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  border-color: transparent;
+  box-shadow: 0 10px 20px rgba(99, 102, 241, 0.3);
+}
+
+.history-week-btn:hover {
+  transform: translateY(-1px);
+}
+
+.history-week-table-body {
+  margin-top: 1.5rem;
+}
+
+.history-week-table-body table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0 0.75rem;
+  table-layout: fixed;
+}
+
+.history-week-table-body thead th {
+  text-align: left;
+  font-size: 0.75rem;
+  letter-spacing: 0.4em;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: rgba(248, 250, 252, 0.65);
+  padding: 0.1rem 0.25rem;
+}
+
+.history-week-table-body th:last-child {
+  width: 90px;
+}
+
+.history-week-table-row {
+  background: rgba(15, 23, 42, 0.85);
+  border: 1px solid rgba(59, 130, 246, 0.35);
+  border-radius: 1.5rem;
+  box-shadow: 0 30px 45px rgba(2, 6, 23, 0.4);
+  transition: border-color 0.2s ease, transform 0.2s ease;
+}
+
+.history-week-table-row td {
+  padding: 0.85rem 0.75rem;
+  vertical-align: middle;
+  text-align: center;
+}
+
+.history-week-table-row:hover {
+  border-color: rgba(99, 102, 241, 0.7);
+  transform: translateY(-2px);
+}
+.history-week-table-row td:first-child {
+  width: 150px;
+}
+
+.history-week-table-row td:nth-child(2) {
+  width: 130px;
+}
+
+.history-week-table-row td:nth-child(3) {
+  width: calc(100% - 430px);
+}
+
+.history-week-table-row td:nth-child(4) {
+  width: 140px;
+}
+.history-week-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  align-items: center;
+  text-align: center;
+}
+
+.history-week-day strong {
+  font-size: 1.05rem;
+}
+
+.history-week-day span {
+  font-size: 0.85rem;
+  color: rgba(248, 250, 252, 0.6);
+}
+
+.history-week-average strong {
+  font-size: 1rem;
+}
+
+.history-week-average small {
+  font-size: 0.7rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: rgba(248, 250, 252, 0.5);
+}
+
+.history-week-tags {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.history-week-tag-card-label {
+  font-size: 0.65rem;
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+  color: rgba(148, 163, 184, 0.8);
+}
+
+.history-week-tag-card-value {
+  font-size: 1.4rem;
+  margin-top: 0.35rem;
+  color: #f8fafc;
+}
+
+.history-week-tag-card {
+  background: rgba(15, 23, 42, 0.9);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 14px;
+  padding: 0.65rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-height: 84px;
+  gap: 0.5rem;
+  justify-content: space-between;
+  text-align: center;
+}
+
+.history-week-tags-columns {
+  display: flex;
+  gap: 1rem;
+}
+
+.history-week-tag-column {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.history-week-tag-card {
+  min-height: 84px;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.history-week-tags-columns > * + * {
+  border-left: 1px solid rgba(148, 163, 184, 0.2);
+  padding-left: 1rem;
+}
+
+.history-week-progress {
+  gap: 0.45rem;
+}
+
+.history-progress-bar {
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.3);
+  overflow: hidden;
+}
+
+.history-progress-fill {
+  display: block;
+  height: 100%;
+  background: linear-gradient(135deg, #4f46e5, #6366f1);
+}
+
+.history-week-actions {
+  justify-content: center;
+}
+
+.history-week-action {
+  border-radius: 999px;
+  border: 1px solid transparent;
+  padding: 0.45rem 1rem;
+  font-size: 0.75rem;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: transform 0.2s ease;
+}
+
+.history-week-action--download {
+  background: linear-gradient(135deg, #38bdf8, #6366f1);
+  border-color: transparent;
+  color: #fff;
+  font-weight: 600;
+  letter-spacing: 0.4em;
+}
+
+@media (max-width: 1024px) {
+  .history-week-table {
+    padding: 1.5rem;
+  }
+
+  .history-week-table-body table {
+    border-spacing: 0 0.6rem;
+  }
+}
+
+@media (max-width: 768px) {
+  .history-week-table {
+    padding: 1.25rem;
+  }
+
+  .history-week-table-body table {
+    font-size: 0.85rem;
+  }
+
+  .history-week-table-row td {
+    padding: 0.7rem 0.5rem;
+  }
+
+  .history-week-table-body thead {
+    display: none;
+  }
+
+  .history-week-table-row {
+    border-radius: 1rem;
+  }
+}
+
+.history-chart-empty {
+  padding: 2rem;
+  text-align: center;
+  color: rgba(248, 250, 252, 0.7);
+}
+
 .history-chart-empty {
   padding: 2rem;
   text-align: center;

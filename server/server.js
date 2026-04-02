@@ -119,7 +119,7 @@ setInterval(sweepOldLogs, RETENTION_INTERVAL_MS)
 // list panel
 app.get("/api/panels", (req, res) => {
 
-  db.query(
+   db.query(
     "SELECT id, tagname, tagdesc FROM tagmst",
     (err, result) => {
 
