@@ -47,23 +47,30 @@ const dbConfig = {
   password: "",
 }
 
-const db = mysql.createConnection({
-  ...dbConfig,
-  database: "ewon",
-})
+const createPool = (database) =>
+  mysql.createPool({
+    ...dbConfig,
+    database,
+    waitForConnections: true,
+    connectionLimit: 5,
+    queueLimit: 0,
+    enableKeepAlive: true,
+    keepAliveInitialDelay: 0,
+  })
 
-const logsDb = mysql.createConnection({
-  ...dbConfig,
-  database: "ewon-logs",
-})
+const db = createPool("ewon")
+const logsDb = createPool("ewon-logs")
 
-const connectTo = (connection, name) => {
-  connection.connect((err) => {
+const connectTo = (pool, name) => {
+  pool.getConnection((err, connection) => {
+    if (connection) {
+      connection.release()
+    }
     if (err) {
       console.log(`${name} error`, err)
-    } else {
-      console.log(`${name} connected`)
+      return
     }
+    console.log(`${name} connected`)
   })
 }
 

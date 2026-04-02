@@ -35,6 +35,8 @@ type DailyResponse = {
   tags: Record<string, Array<{ timestamp: string; value: number }>>
 }
 
+type HourlyPoint = [number, number]
+
 const API_BASE = "http://localhost:3000"
 const WEEKLY_REFRESH_MS = 5 * 60 * 1000
 const DAILY_REFRESH_MS = 30 * 1000
@@ -228,82 +230,143 @@ export default function HistoryReport() {
     }
   }, [weekData])
 
-  const dailyDetail = selectedDay ? dailyCache[selectedDay] : undefined
+const dailyDetail = selectedDay ? dailyCache[selectedDay] : undefined
 
-  const hourlyChartOption = useMemo(() => {
-    if (!dailyDetail) return null
-    const hourSlots = Array.from({ length: 24 }, (_, index) => index)
-    const buckets = TRACKED_TAGS.reduce<Record<string, number[][]>>((acc, tag) => {
-      acc[tag] = Array.from({ length: 24 }, () => [])
-      return acc
-    }, {})
+const hourlyChartOption = useMemo(() => {
+  if (!dailyDetail) return null
 
-    Object.entries(dailyDetail.tags).forEach(([tag, entries]) => {
-      entries.forEach((entry) => {
-        const hour = new Date(entry.timestamp).getHours()
-        buckets[tag][hour].push(entry.value)
-      })
+  const buildSeries = (): Array<{
+    name: string
+    type: "line"
+    smooth: boolean
+    showSymbol: boolean
+    connectNulls: boolean
+    emphasis: { focus: "series" }
+    data: HourlyPoint[]
+  }> =>
+    TRACKED_TAGS.map((tag) => {
+      const entries = (dailyDetail.tags[tag] ?? []).slice()
+      entries.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+      const data = entries.map(
+        (entry) => [new Date(entry.timestamp).getTime(), Number(entry.value)] as HourlyPoint,
+      )
+      return {
+        name: tag,
+        type: "line",
+        smooth: true,
+        showSymbol: false,
+        connectNulls: false,
+        emphasis: { focus: "series" },
+        data,
+      }
     })
 
-    const series = TRACKED_TAGS.map((tag) => ({
-      name: tag,
-      type: "line",
-      smooth: true,
-      data: hourSlots.map((hour) => {
-        const bucket = buckets[tag][hour]
-        if (!bucket.length) return null
-        const sum = bucket.reduce((acc, value) => acc + value, 0)
-        return Number((sum / bucket.length).toFixed(4))
-      }),
-      connectNulls: true,
-    }))
+  const series = buildSeries()
 
-    return {
-      tooltip: {
-        trigger: "axis",
-        formatter: (params: any) => {
-          if (!Array.isArray(params)) return ""
-          const header = `${params[0]?.axisValue ?? ""}:00<br/>`
-          const lines = params
-            .map((item: any) => {
-              const val = item?.data ?? "—"
-              return `${item.marker} ${item.seriesName}: ${
-                typeof val === "number" ? val.toLocaleString("id-ID", { maximumFractionDigits: 4 }) : "—"
-              }`
-            })
-            .join("<br/>")
-          return header + lines
-        },
-      },
-      legend: {
-        data: TRACKED_TAGS,
-        top: 0,
-        textStyle: {
-          color: "rgba(248, 250, 252, 0.9)",
-        },
-      },
-      grid: {
-        left: "3%",
-        right: "3%",
-        bottom: "5%",
-        top: "12%",
-        containLabel: true,
-      },
-      xAxis: {
-        type: "category",
-        data: hourSlots.map((hour) => `${String(hour).padStart(2, "0")}:00`),
-        axisLine: { lineStyle: { color: "rgba(148, 163, 184, 0.6)" } },
-        axisLabel: { color: "rgba(248, 250, 252, 0.8)" },
-      },
-      yAxis: {
-        type: "value",
-        axisLine: { show: false },
-        axisLabel: { color: "rgba(248, 250, 252, 0.8)" },
-        splitLine: { lineStyle: { color: "rgba(148, 163, 184, 0.2)" } },
-      },
-      series,
+  const timestamps = series
+    .flatMap((serie) => serie.data.map((point: [number, number]) => point[0]))
+    .filter((value) => Number.isFinite(value))
+    .sort((a, b) => a - b)
+
+  const BREAK_THRESHOLD_MS = 90 * 60 * 1000
+  const BREAK_GAP = "1%"
+  const breaks: Array<{ start: number; end: number; gap: string }> = []
+  for (let i = 1; i < timestamps.length; i += 1) {
+    const prev = timestamps[i - 1]
+    const curr = timestamps[i]
+    if (curr - prev > BREAK_THRESHOLD_MS) {
+      breaks.push({ start: prev, end: curr, gap: BREAK_GAP })
     }
-  }, [dailyDetail])
+  }
+
+  const selectedDayNumber = selectedDay ? Number(selectedDay.slice(-2)) : null
+
+  const formatTime = (value: number) => {
+    const date = new Date(value)
+    const label = `${String(date.getHours()).padStart(2, "0")}:${String(
+      date.getMinutes(),
+    ).padStart(2, "0")}`
+    if (selectedDayNumber && date.getDate() !== selectedDayNumber) {
+      return `${label}\n${date.getDate()}/${date.getMonth() + 1}`
+    }
+    return label
+  }
+
+  return {
+    tooltip: {
+      trigger: "axis",
+      axisPointer: {
+        type: "cross",
+      },
+      formatter: (params: any) => {
+        if (!Array.isArray(params)) return ""
+        const header = formatTime(params[0]?.axisValue ?? 0)
+        const lines = params
+          .map((item: any) => {
+            const val = item?.data?.[1] ?? "—"
+            return `${item.marker} ${item.seriesName}: ${
+              typeof val === "number" ? val.toLocaleString("id-ID", { maximumFractionDigits: 4 }) : "—"
+            }`
+          })
+          .join("<br/>")
+        return `${header}<br/>${lines}`
+      },
+    },
+    legend: {
+      data: TRACKED_TAGS,
+      top: 0,
+      textStyle: {
+        color: "rgba(248, 250, 252, 0.9)",
+      },
+    },
+    grid: {
+      left: "3%",
+      right: "3%",
+      bottom: "18%",
+      top: "12%",
+      containLabel: true,
+    },
+    xAxis: {
+      type: "time",
+      axisLine: { lineStyle: { color: "rgba(148, 163, 184, 0.6)" } },
+      axisLabel: { color: "rgba(248, 250, 252, 0.8)" },
+      axisPointer: {
+        label: {
+          formatter: ({ value }: any) => formatTime(value),
+        },
+      },
+      breaks,
+      breakArea: {
+        expandOnClick: false,
+        zigzagAmplitude: 0,
+        zigzagZ: 200,
+        itemStyle: {
+          borderColor: "none",
+          opacity: 0,
+        },
+      },
+    },
+    yAxis: {
+      type: "value",
+      axisLine: { show: false },
+      axisLabel: { color: "rgba(248, 250, 252, 0.8)" },
+      splitLine: { lineStyle: { color: "rgba(148, 163, 184, 0.2)" } },
+      min: "auto",
+    },
+    dataZoom: [
+      {
+        type: "inside",
+        minValueSpan: 3600 * 1000,
+      },
+      {
+        type: "slider",
+        top: "75%",
+        minValueSpan: 3600 * 1000,
+      },
+    ],
+    series,
+  }
+}, [dailyDetail, selectedDay])
 
   return (
     <main className="history-page">
