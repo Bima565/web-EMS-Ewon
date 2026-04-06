@@ -224,20 +224,69 @@ app.get("/api/param-values", (req, res) => {
   res.json(latestParamSnapshot.values)
 })
 
-const formatDayLabel = (date) =>
+const DAY_MS = 24 * 60 * 60 * 1000
+const DISPLAY_DAY_OFFSET = 1
+
+const safeTimeZone = (value) => {
+  if (!value || typeof value !== "string") return "Asia/Jakarta"
+  try {
+    Intl.DateTimeFormat(undefined, { timeZone: value })
+    return value
+  } catch {
+    return "Asia/Jakarta"
+  }
+}
+
+const formatDayLabel = (date, timeZone) =>
   new Intl.DateTimeFormat("id-ID", {
     weekday: "long",
+    timeZone,
   }).format(date)
 
-const buildWeeklyResponse = (rows, startDate) => {
+const getTimeZoneParts = (date, timeZone) => {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  })
+  const parts = {}
+  formatter.formatToParts(date).forEach((part) => {
+    if (part.type !== "literal") {
+      parts[part.type] = Number(part.value)
+    }
+  })
+  return parts
+}
+
+const formatPartsToDate = (parts) =>
+  `${parts.year}-${String(parts.month).padStart(2, "0")}-${String(parts.day).padStart(
+    2,
+    "0",
+  )}`
+
+const buildWeeklyResponse = (rows, startDate, timeZone) => {
   const dayMap = new Map()
   for (let i = 0; i < WEEK_DAYS; i += 1) {
-    const date = new Date(startDate)
-    date.setDate(startDate.getDate() + i)
-    const key = date.toISOString().slice(0, 10)
+    const timestamp = startDate.getTime() + i * DAY_MS
+    const date = new Date(timestamp)
+    const parts = getTimeZoneParts(date, timeZone)
+    const key = `${parts.year}-${String(parts.month).padStart(2, "0")}-${String(
+      parts.day,
+    ).padStart(2, "0")}`
     dayMap.set(key, {
       date: key,
-      label: formatDayLabel(date),
+      label: formatDayLabel(date, timeZone),
+      displayDate: formatPartsToDate(
+        getTimeZoneParts(
+          new Date(timestamp + DISPLAY_DAY_OFFSET * DAY_MS),
+          timeZone,
+        ),
+      ),
       stats: {},
     })
   }
@@ -246,7 +295,10 @@ const buildWeeklyResponse = (rows, startDate) => {
     const tag = row.tag_name
     if (!TRACKED_TAGS.includes(tag)) return
     const createdAt = new Date(row.created_at)
-    const key = createdAt.toISOString().slice(0, 10)
+    const parts = getTimeZoneParts(createdAt, timeZone)
+    const key = `${parts.year}-${String(parts.month).padStart(2, "0")}-${String(
+      parts.day,
+    ).padStart(2, "0")}`
     const day = dayMap.get(key)
     if (!day) return
 
@@ -275,6 +327,7 @@ const buildWeeklyResponse = (rows, startDate) => {
   const week = Array.from(dayMap.values()).map((day) => ({
     date: day.date,
     label: day.label,
+    displayDate: day.displayDate ?? day.date,
     stats: TRACKED_TAGS.reduce((acc, tag) => {
       const entry = day.stats[tag]
       const avg =
@@ -293,10 +346,21 @@ const buildWeeklyResponse = (rows, startDate) => {
 }
 
 app.get("/api/logs/weekly", async (req, res) => {
+  const timeZone = safeTimeZone(
+    typeof req.query.tz === "string" ? req.query.tz : undefined,
+  )
   const now = new Date()
-  const start = new Date(now)
-  start.setHours(0, 0, 0, 0)
-  start.setDate(start.getDate() - (WEEK_DAYS - 1))
+  const nowParts = getTimeZoneParts(now, timeZone)
+  const localMidnight = Date.UTC(
+    nowParts.year,
+    nowParts.month - 1,
+    nowParts.day,
+    0,
+    0,
+    0,
+  )
+  const startTimestamp = localMidnight - (WEEK_DAYS - 1) * DAY_MS
+  const start = new Date(startTimestamp)
   try {
     const [rows] = await logsDb
       .promise()
@@ -304,7 +368,7 @@ app.get("/api/logs/weekly", async (req, res) => {
         "SELECT tag_name, value, created_at FROM ewon_tag_logs WHERE tag_name IN (?) AND created_at BETWEEN ? AND ? ORDER BY created_at ASC",
         [TRACKED_TAGS, start, now],
       )
-    res.json(buildWeeklyResponse(rows, start))
+    res.json(buildWeeklyResponse(rows, start, timeZone))
   } catch (error) {
     console.error("failed to load weekly logs", error)
     res.status(500).json({ message: "Tidak dapat mengambil data mingguan" })

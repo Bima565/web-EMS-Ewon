@@ -23,6 +23,7 @@ type WeeklyDay = {
       max: number | null
     }
   >
+  displayDate?: string
 }
 
 type WeeklyResponse = {
@@ -41,16 +42,12 @@ const API_BASE = "http://localhost:3000"
 const WEEKLY_REFRESH_MS = 5 * 60 * 1000
 const DAILY_REFRESH_MS = 30 * 1000
 const LIVE_REFRESH_MS = 15 * 1000
-const WEEKDAY_ROTATION_START = "Kamis"
 
 const normalizeWeeklyData = (entries: WeeklyDay[]) => {
   if (!entries.length) return entries
-  const sorted = [...entries].sort(
+  return [...entries].sort(
     (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
   )
-  const pivot = sorted.findIndex((day) => day.label === WEEKDAY_ROTATION_START)
-  if (pivot <= 0) return sorted
-  return [...sorted.slice(pivot), ...sorted.slice(0, pivot)]
 }
 
 const formatWeeklyValue = (value: number | null) =>
@@ -133,11 +130,18 @@ export default function HistoryReport() {
     dailyCacheRef.current = dailyCache
   }, [dailyCache])
 
+  const userTimeZone = useMemo(
+    () => Intl.DateTimeFormat().resolvedOptions().timeZone,
+    [],
+  )
+
   const fetchWeeklyData = useCallback(() => {
     setLoadingWeek(true)
     setWeekError(null)
 
-    fetch(`${API_BASE}/api/logs/weekly`)
+    fetch(
+      `${API_BASE}/api/logs/weekly?tz=${encodeURIComponent(userTimeZone)}`,
+    )
       .then(async (res) => {
         if (!res.ok) {
           throw new Error("tidak bisa memuat data mingguan")
@@ -156,7 +160,7 @@ export default function HistoryReport() {
       .finally(() => {
         setLoadingWeek(false)
       })
-  }, [])
+  }, [userTimeZone])
 
   useEffect(() => {
     fetchWeeklyData()
@@ -474,7 +478,7 @@ export default function HistoryReport() {
                           <td>
                             <div className="history-week-cell history-week-day">
                               <strong>{day.label}</strong>
-                              <span>{day.date}</span>
+                              <span>{day.displayDate ?? day.date}</span>
                             </div>
                           </td>
                           <td>
@@ -552,7 +556,7 @@ export default function HistoryReport() {
               <header className="history-day-card-header">
                 <div>
                   <h3>{day.label}</h3>
-                  <p>{day.date}</p>
+                  <p>{day.displayDate ?? day.date}</p>
                 </div>
                 <button type="button" onClick={() => handleSelectDay(day.date)}>
                   {isActive ? "Tampilkan per jam" : "Lihat detail"}
