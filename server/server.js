@@ -19,6 +19,12 @@ const TRACKED_TAGS = [
 const WEEK_DAYS = 7
 const RETENTION_DAYS = 14
 const RETENTION_INTERVAL_MS = 6 * 60 * 60 * 1000
+const PARAM_POLL_INTERVAL_MS = 15 * 1000
+
+const latestParamSnapshot = {
+  values: [],
+  updatedAt: null,
+}
 
 const parseParamLines = (text) =>
   text
@@ -99,6 +105,43 @@ const logParamValues = async (params) => {
   }
 }
 
+const refreshParamSnapshot = async () => {
+  const response = await fetch(PARAM_URL, {
+    headers: {
+      Authorization: PARAM_AUTH,
+    },
+  })
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => "unable to read body")
+    throw new Error(
+      `param polling failed with status ${response.status}: ${response.statusText} (${body})`,
+    )
+  }
+
+  const text = await response.text()
+  const data = parseParamLines(text)
+
+  latestParamSnapshot.values = data
+  latestParamSnapshot.updatedAt = new Date().toISOString()
+  await logParamValues(data)
+  console.log(
+    `Param snapshot refreshed (${data.length} entries) @${latestParamSnapshot.updatedAt}`,
+  )
+}
+
+const startParamPolling = () => {
+  const runner = () => {
+    refreshParamSnapshot().catch((error) => {
+      console.error("param polling error", error)
+    })
+  }
+  runner()
+  return setInterval(runner, PARAM_POLL_INTERVAL_MS)
+}
+
+startParamPolling()
+
 const sweepOldLogs = async () => {
   try {
     const cutoff = new Date(Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000)
@@ -167,33 +210,18 @@ app.get("/api/history/:tag", (req,res)=>{
 
 })
 
-app.get("/api/param-values", async (req, res) => {
-  try {
-    const response = await fetch(PARAM_URL, {
-      headers: {
-        Authorization: PARAM_AUTH,
-      },
-    })
-
-    if (!response.ok) {
-      const body = await response.text().catch(() => "unable to read body")
-      return res.status(response.status).json({
-        message: "Gagal mengambil data param dari Ewon",
-        statusText: response.statusText,
-        detail: body,
-      })
-    }
-
-    const text = await response.text()
-    const data = parseParamLines(text)
-    void logParamValues(data)
-    res.json(data)
-  } catch (error) {
-    res.status(500).json({
-      message: "Terjadi kesalahan saat menghubungi Ewon",
-      error: error?.message ?? "unknown error",
+app.get("/api/param-values", (req, res) => {
+  if (!latestParamSnapshot.values.length) {
+    return res.status(503).json({
+      message: "Data param belum tersedia, sedang mencoba mengambil dari Ewon",
     })
   }
+
+  if (latestParamSnapshot.updatedAt) {
+    res.setHeader("X-Param-Updated-At", latestParamSnapshot.updatedAt)
+  }
+
+  res.json(latestParamSnapshot.values)
 })
 
 const formatDayLabel = (date) =>
@@ -334,6 +362,31 @@ app.use((req,res)=>{
 ====================== */
 
 const PORT = 3000
+
+const logLifecycle = (message) => {
+  const timestamp = new Date().toISOString()
+  console.log(`[lifecycle][${timestamp}] ${message}`)
+}
+
+const shutdown = (signal, code = 0) => {
+  logLifecycle(`received ${signal}, exiting with code ${code}`)
+  process.exit(code)
+}
+
+process.on("SIGINT", () => shutdown("SIGINT", 0))
+process.on("SIGTERM", () => shutdown("SIGTERM", 0))
+process.on("SIGBREAK", () => shutdown("SIGBREAK", 0))
+process.on("uncaughtException", (error) => {
+  console.error("uncaughtException", error)
+  shutdown("uncaughtException", 1)
+})
+process.on("unhandledRejection", (reason) => {
+  console.error("unhandledRejection", reason)
+  shutdown("unhandledRejection", 1)
+})
+process.on("exit", (code) => {
+  logLifecycle(`process.exit detected with code ${code}`)
+})
 
 app.listen(PORT, () => {
   console.log("Server running http://localhost:" + PORT)

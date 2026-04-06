@@ -40,6 +40,7 @@ type HourlyPoint = [number, number]
 const API_BASE = "http://localhost:3000"
 const WEEKLY_REFRESH_MS = 5 * 60 * 1000
 const DAILY_REFRESH_MS = 30 * 1000
+const LIVE_REFRESH_MS = 15 * 1000
 const WEEKDAY_ROTATION_START = "Kamis"
 
 const normalizeWeeklyData = (entries: WeeklyDay[]) => {
@@ -69,32 +70,55 @@ export default function HistoryReport() {
   const [loadingLive, setLoadingLive] = useState(false)
   const [liveError, setLiveError] = useState<string | null>(null)
   const dailyCacheRef = useRef(dailyCache)
+  const initialLiveLoadRef = useRef(true)
 
   useEffect(() => {
-    setLoadingLive(true)
-    setLiveError(null)
+    let isMounted = true
 
-    fetch(`${API_BASE}/api/param-values`)
-      .then(async (res) => {
-        if (!res.ok) throw new Error("tidak bisa memuat data realtime")
-        return (await res.json()) as Array<{ TagName: string; Value: number }>
-      })
-      .then((params) => {
-        const filtered = params
-          .filter((param) => TRACKED_TAGS.includes(param.TagName))
-          .map((param) => ({
-            tag: param.TagName,
-            value: Number.isFinite(param.Value) ? param.Value : null,
-          }))
-        setLatestParams(filtered)
-      })
-      .catch((err) => {
-        console.error(err)
-        setLiveError("Gagal memuat data realtime")
-      })
-      .finally(() => {
-        setLoadingLive(false)
-      })
+    const loadRealtime = () => {
+      if (initialLiveLoadRef.current) {
+        setLoadingLive(true)
+      }
+      setLiveError(null)
+
+      fetch(`${API_BASE}/api/param-values`)
+        .then(async (res) => {
+          if (!res.ok) throw new Error("tidak bisa memuat data realtime")
+          return (await res.json()) as Array<{ TagName: string; Value: number }>
+        })
+        .then((params) => {
+          if (!isMounted) return
+          const filtered = params
+            .filter((param) => TRACKED_TAGS.includes(param.TagName))
+            .map((param) => ({
+              tag: param.TagName,
+              value: Number.isFinite(param.Value) ? param.Value : null,
+            }))
+          setLatestParams(filtered)
+          if (initialLiveLoadRef.current) {
+            setLoadingLive(false)
+            initialLiveLoadRef.current = false
+          }
+        })
+        .catch((err) => {
+          console.error(err)
+          if (isMounted) {
+            setLiveError("Gagal memuat data realtime")
+            if (initialLiveLoadRef.current) {
+              setLoadingLive(false)
+              initialLiveLoadRef.current = false
+            }
+          }
+        })
+    }
+
+    loadRealtime()
+    const timer = setInterval(loadRealtime, LIVE_REFRESH_MS)
+
+    return () => {
+      isMounted = false
+      clearInterval(timer)
+    }
   }, [])
 
   const selectedMonth = useMemo(() => {
