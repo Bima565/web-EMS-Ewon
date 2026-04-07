@@ -1,13 +1,10 @@
-import { useEffect, useMemo, useState } from "react"
+import { useMemo } from "react"
 import ReactECharts from "echarts-for-react"
-import { getParamValues } from "../api/api"
+import { useLiveParams } from "../hooks/useLiveParams"
 import "./style-ComparisonKwhChart.css"
 
-const FETCH_INTERVAL_MS = 5000
 const WINDOW_MS = 5 * 60 * 1000
-const HISTORY_WINDOW_MS = WINDOW_MS * 2
 const PARAM_TAG = "pm139KWH"
-const STORAGE_KEY = "web-ewon:param-chart-live-history"
 
 type ChartPoint = {
   timestamp: number
@@ -23,31 +20,6 @@ const formatTimestamp = (value: number) =>
 
 const buildSeries = (points: ChartPoint[]) =>
   points.map((row) => [row.timestamp, Number(row.value.toFixed?.(3) ?? row.value)])
-
-const readStoredHistory = (): ChartPoint[] => {
-  if (typeof window === "undefined") return []
-  const storedText = window.localStorage.getItem(STORAGE_KEY)
-  if (!storedText) return []
-
-  try {
-    const parsed = JSON.parse(storedText) as Record<string, ChartPoint[]>
-    const cutoff = Date.now() - HISTORY_WINDOW_MS
-    return (parsed[PARAM_TAG] ?? [])
-      .filter(
-        (entry) =>
-          entry &&
-          Number.isFinite(entry.timestamp) &&
-          Number.isFinite(entry.value) &&
-          entry.timestamp >= cutoff,
-      )
-  } catch (error) {
-    console.error("failed parse history", error)
-    return []
-  }
-}
-
-const pruneHistory = (entries: ChartPoint[], now: number) =>
-  entries.filter((entry) => entry.timestamp >= now - HISTORY_WINDOW_MS)
 
 const buildOption = (points: ChartPoint[], title: string) => ({
   title: {
@@ -108,53 +80,8 @@ const getDelta = (points: ChartPoint[]) => {
 }
 
 export default function ComparisonKwhChart() {
-  const [history, setHistory] = useState<ChartPoint[]>(readStoredHistory)
-  const [status, setStatus] = useState<"loading" | "idle" | "error">("loading")
-  const [lastSync, setLastSync] = useState<string>("—")
-
-  useEffect(() => {
-    let mounted = true
-
-    const load = async (showLoading = false) => {
-      if (!mounted) return
-      if (showLoading) setStatus("loading")
-
-      try {
-        const params = await getParamValues()
-        if (!mounted) return
-
-        const match = params.find(
-          (p) => p.TagName.toLowerCase() === PARAM_TAG.toLowerCase(),
-        )
-
-        if (!match || !Number.isFinite(match.Value)) {
-          throw new Error("nilai tidak valid")
-        }
-
-        const timestamp = Date.now()
-
-        setHistory((prev) => {
-          const next = [...prev, { timestamp, value: match.Value }]
-          return pruneHistory(next, timestamp)
-        })
-
-        setLastSync(formatTimestamp(timestamp))
-        setStatus("idle")
-      } catch (err) {
-        console.error(err)
-        if (mounted) setStatus("error")
-      }
-    }
-
-    load(true)
-
-    const interval = setInterval(() => load(), FETCH_INTERVAL_MS)
-
-    return () => {
-      mounted = false
-      clearInterval(interval)
-    }
-  }, [])
+  const { history: liveHistory, status, lastSync } = useLiveParams()
+  const history = liveHistory[PARAM_TAG] ?? []
 
   const { currentPoints, previousPoints } = useMemo(() => {
     const now = Date.now()
@@ -177,9 +104,9 @@ export default function ComparisonKwhChart() {
       ? "Memuat..."
       : status === "error"
       ? "Gagal ambil data"
-      : lastSync === "—"
+      : lastSync == null
       ? "Menunggu data"
-      : `Last sync: ${lastSync}`
+      : `Last sync: ${formatTimestamp(lastSync)}`
 
   return (
     <section className="comparison-card">

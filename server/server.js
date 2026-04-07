@@ -20,12 +20,14 @@ const WEEK_DAYS = 7
 const RETENTION_DAYS = 14
 const RETENTION_INTERVAL_MS = 6 * 60 * 60 * 1000
 const PARAM_POLL_INTERVAL_MS = 15 * 1000
+const PARAM_FETCH_TIMEOUT_MS = 12 * 1000
 const REPORT_TIME_ZONE = "Asia/Jakarta"
 
 const latestParamSnapshot = {
   values: [],
   updatedAt: null,
 }
+let isParamPolling = false
 
 const parseParamLines = (text) =>
   text
@@ -111,6 +113,7 @@ const refreshParamSnapshot = async () => {
     headers: {
       Authorization: PARAM_AUTH,
     },
+    signal: AbortSignal.timeout(PARAM_FETCH_TIMEOUT_MS),
   })
 
   if (!response.ok) {
@@ -133,9 +136,19 @@ const refreshParamSnapshot = async () => {
 
 const startParamPolling = () => {
   const runner = () => {
-    refreshParamSnapshot().catch((error) => {
-      console.error("param polling error", error)
-    })
+    if (isParamPolling) {
+      console.warn("param polling skipped because previous fetch is still running")
+      return
+    }
+
+    isParamPolling = true
+    refreshParamSnapshot()
+      .catch((error) => {
+        console.error("param polling error", error)
+      })
+      .finally(() => {
+        isParamPolling = false
+      })
   }
   runner()
   return setInterval(runner, PARAM_POLL_INTERVAL_MS)

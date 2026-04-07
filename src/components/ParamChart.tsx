@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from "react"
 import ReactECharts from "echarts-for-react"
-import { getHistory, getParamValues, type ParamValue } from "../api/api"
+import { getHistory, type ParamValue } from "../api/api"
+import { useLiveParams } from "../hooks/useLiveParams"
 import "./style-ParamChart.css"
 
-const FETCH_INTERVAL_MS = 2000
 const HISTORY_WINDOW_MS = 60 * 60 * 1000
 
 type LiveHistoryRow = {
@@ -44,34 +44,11 @@ const CHART_PARAMETERS: Array<{
 ]
 
 const CHART_TAGS = CHART_PARAMETERS.map((parameter) => parameter.tag)
-const STORAGE_KEY = "web-ewon:param-chart-live-history"
-
-const parseStoredHistory = () => {
-  if (typeof window === "undefined") return {}
-  const raw = window.localStorage.getItem(STORAGE_KEY)
-  if (!raw) return {}
-  try {
-    return JSON.parse(raw) as Record<string, LiveHistoryRow[]>
-  } catch (error) {
-    console.error("param chart: failed to parse stored history", error)
-    return {}
-  }
-}
 
 const isWithinWindow = (timestamp: number, now: number) => timestamp >= now - HISTORY_WINDOW_MS
 
 const pruneEntries = (entries: LiveHistoryRow[], now: number) =>
   entries.filter((entry) => isWithinWindow(entry.timestamp, now))
-
-const getInitialLiveHistory = () => {
-  const stored = parseStoredHistory()
-  const now = Date.now()
-  return CHART_TAGS.reduce<Record<string, LiveHistoryRow[]>>((acc, tag) => {
-    const cached = stored[tag] ?? []
-    acc[tag] = pruneEntries(cached, now)
-    return acc
-  }, {})
-}
 
 const formatTimestamp = (value: number) => {
   const date = new Date(value)
@@ -84,20 +61,10 @@ const formatTimestamp = (value: number) => {
   })
 }
 
-const persistLiveHistory = (history: Record<string, LiveHistoryRow[]>) => {
-  if (typeof window === "undefined") return
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(history))
-  } catch (error) {
-    console.error("param chart: failed to persist history", error)
-  }
-}
-
 export default function ParamChart() {
-  const [params, setParams] = useState<ParamValue[]>([])
-  const [status, setStatus] = useState<"loading" | "error" | "idle">("loading")
+  const { params, history: sharedHistory, status } = useLiveParams()
   const [historyStatus, setHistoryStatus] = useState<"loading" | "error" | "idle">("loading")
-  const [liveHistory, setLiveHistory] = useState<Record<string, LiveHistoryRow[]>>(getInitialLiveHistory)
+  const [historyOverrides, setHistoryOverrides] = useState<Record<string, LiveHistoryRow[]>>({})
 
   const paramsByName = useMemo(() => {
     const map = new Map<string, ParamValue>()
@@ -109,51 +76,6 @@ export default function ParamChart() {
 
   useEffect(() => {
     let mounted = true
-
-    const applyUpdates = (updates: Record<string, LiveHistoryRow[]>) => {
-      setLiveHistory((prev) => {
-        const now = Date.now()
-        const next: Record<string, LiveHistoryRow[]> = { ...prev }
-        for (const tag of CHART_TAGS) {
-          const incoming = updates[tag] ?? []
-          const base = next[tag] ?? []
-          next[tag] = pruneEntries([...base, ...incoming], now)
-        }
-        persistLiveHistory(next)
-        return next
-      })
-    }
-
-    const appendLiveEntry = (data: ParamValue[]) => {
-      const now = Date.now()
-      const updates: Record<string, LiveHistoryRow[]> = {}
-      for (const metric of CHART_PARAMETERS) {
-        const match = data.find(
-          (param) => param.TagName.toLowerCase() === metric.tag.toLowerCase(),
-        )
-        if (match && Number.isFinite(match.Value)) {
-          updates[metric.tag] = [{ timestamp: now, value: match.Value }]
-        }
-      }
-      applyUpdates(updates)
-    }
-
-    const loadParams = async (showLoading = false) => {
-      if (!mounted) return
-      if (showLoading) setStatus("loading")
-
-      try {
-        const data = await getParamValues()
-        if (!mounted) return
-        setParams(data)
-        appendLiveEntry(data)
-        setStatus("idle")
-      } catch (error) {
-        if (!mounted) return
-        console.error("param fetch", error)
-        setStatus("error")
-      }
-    }
 
     const loadHistories = async (showLoading = false) => {
       if (!mounted) return
@@ -189,7 +111,14 @@ export default function ParamChart() {
             value: row.tagvalue,
           }))
         }
-        applyUpdates(updates)
+        setHistoryOverrides((prev) => {
+          const now = Date.now()
+          const next = { ...prev }
+          for (const tag of CHART_TAGS) {
+            next[tag] = pruneEntries(updates[tag] ?? prev[tag] ?? [], now)
+          }
+          return next
+        })
         setHistoryStatus("idle")
       } catch (error) {
         if (!mounted) return
@@ -199,14 +128,24 @@ export default function ParamChart() {
     }
 
     loadHistories(true)
-    loadParams(true)
-    const timer = setInterval(loadParams, FETCH_INTERVAL_MS)
 
     return () => {
       mounted = false
-      clearInterval(timer)
     }
   }, [])
+
+  const liveHistory = useMemo(() => {
+    const now = Date.now()
+    return CHART_TAGS.reduce<Record<string, LiveHistoryRow[]>>((acc, tag) => {
+      const shared = (sharedHistory[tag] ?? []).map((entry) => ({
+        timestamp: entry.timestamp,
+        value: entry.value,
+      }))
+      const fallback = historyOverrides[tag] ?? []
+      acc[tag] = pruneEntries(shared.length ? shared : fallback, now)
+      return acc
+    }, {})
+  }, [historyOverrides, sharedHistory])
 
   const formatValue = (value: number) =>
     Number.isFinite(value)

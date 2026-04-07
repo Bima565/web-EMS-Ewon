@@ -1,9 +1,6 @@
-import { useEffect, useMemo, useState } from "react"
+import { useMemo } from "react"
 import ReactECharts from "echarts-for-react"
-import { getParamValues } from "../api/api"
-
-const FETCH_INTERVAL_MS = 2000
-const ONE_HOUR_MS = 60 * 60 * 1000
+import { useLiveParams } from "../hooks/useLiveParams"
 
 const LIVE_METRICS: Array<{
   tag: string
@@ -19,12 +16,6 @@ const LIVE_METRICS: Array<{
   { tag: "pm139VAN", label: "Volt", unit: "V", color: "#22d3ee", fill: "rgba(34,211,238,0.25)" },
   { tag: "pm139F", label: "Hz", unit: "Hz", color: "#facc15", fill: "rgba(250,204,21,0.25)" },
 ]
-
-type LiveEntry = {
-  timestamp: Date
-  label: string
-  values: Record<string, number | null>
-}
 
 const formatTimestamp = (value: Date) =>
   value.toLocaleTimeString("id-ID", {
@@ -42,60 +33,13 @@ type TooltipParams = Array<{
 }>
 
 export default function DashboardChart() {
-  const [history, setHistory] = useState<LiveEntry[]>([])
-  const [status, setStatus] = useState<"loading" | "idle" | "error">("loading")
-  const [lastSync, setLastSync] = useState<string>("—")
-
-  useEffect(() => {
-    let mounted = true
-
-    const load = async () => {
-      if (!mounted) return
-      setStatus("loading")
-
-      try {
-        const params = await getParamValues()
-        if (!mounted) return
-
-        const timestamp = new Date()
-        const entry: LiveEntry = {
-          timestamp,
-          label: formatTimestamp(timestamp),
-          values: LIVE_METRICS.reduce((acc, metric) => {
-            const match = params.find(
-              (param) => param.TagName.toLowerCase() === metric.tag.toLowerCase(),
-            )
-            acc[metric.tag] = match?.Value ?? null
-            return acc
-          }, {} as Record<string, number | null>),
-        }
-
-        setHistory((prev) => {
-          const cutoff = timestamp.getTime() - ONE_HOUR_MS
-          const next = [...prev, entry].filter((row) => row.timestamp.getTime() >= cutoff)
-          return next
-        })
-        setStatus("idle")
-        setLastSync(entry.label)
-      } catch (error) {
-        if (!mounted) return
-        console.error("Dashboard live chart fetch", error)
-        setStatus("error")
-      }
-    }
-
-    load()
-    const interval = setInterval(load, FETCH_INTERVAL_MS)
-    return () => {
-      mounted = false
-      clearInterval(interval)
-    }
-  }, [])
+  const { history, status, lastSync } = useLiveParams()
 
   const chartOption = useMemo(() => {
-    const labels = history.map((entry) => entry.label)
-    const hasData = history.some((entry) =>
-      LIVE_METRICS.some((metric) => entry.values[metric.tag] != null),
+    const points = history[LIVE_METRICS[0].tag] ?? []
+    const labels = points.map((entry) => formatTimestamp(new Date(entry.timestamp)))
+    const hasData = LIVE_METRICS.some((metric) =>
+      (history[metric.tag] ?? []).some((entry) => entry.value != null),
     )
 
     return {
@@ -185,7 +129,7 @@ export default function DashboardChart() {
           color: metric.color,
         },
         areaStyle:
-          hasData && history.length > 0
+          hasData && points.length > 0
             ? {
                 opacity: 0.2,
                 color: metric.fill,
@@ -194,7 +138,7 @@ export default function DashboardChart() {
         emphasis: {
           focus: "series",
         },
-        data: history.map((entry) => entry.values[metric.tag]),
+        data: (history[metric.tag] ?? []).map((entry) => entry.value),
       })),
     }
   }, [history])
@@ -204,13 +148,13 @@ export default function DashboardChart() {
       ? "Tidak dapat terhubung ke API live."
       : status === "loading"
       ? "Memuat data realtime..."
-      : `Terakhir sinkron: ${lastSync}`
+      : `Terakhir sinkron: ${lastSync ? formatTimestamp(new Date(lastSync)) : "—"}`
 
   return (
     <div>
       <div className="dashboard-live-chart-meta">
         <span className="dashboard-live-chart-status">{statusMessage}</span>
-        <span className="dashboard-live-chart-refresh">Refresh 2 detik</span>
+        <span className="dashboard-live-chart-refresh">Riwayat 1 jam</span>
       </div>
       {status === "error" && (
         <div className="dashboard-live-chart-error">{statusMessage}</div>

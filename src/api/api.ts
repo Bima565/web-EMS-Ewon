@@ -1,16 +1,29 @@
-export async function getRealtime() {
-  const res = await fetch("http://localhost:3000/api/realtime")
+import type { Panel, Tag } from "../types/tag"
+
+const API_BASE = "http://localhost:3000"
+
+const fetchJson = async <T>(path: string): Promise<T> => {
+  const res = await fetch(`${API_BASE}${path}`, {
+    cache: "no-store",
+  })
+  if (!res.ok) {
+    throw new Error(`fetch ${path} failed (${res.status})`)
+  }
   return res.json()
 }
 
-export async function getPanels() {
-  const res = await fetch("http://localhost:3000/api/panels")
-  return res.json()
+export async function getRealtime(): Promise<Tag[]> {
+  return fetchJson("/api/realtime")
 }
 
-export async function getHistory(tag: string) {
-  const res = await fetch(`http://localhost:3000/api/history/${tag}`)
-  return res.json()
+export async function getPanels(): Promise<Panel[]> {
+  return fetchJson("/api/panels")
+}
+
+export async function getHistory(
+  tag: string,
+): Promise<Array<{ created: string; tagvalue: number }>> {
+  return fetchJson(`/api/history/${tag}`)
 }
 
 export type ParamValue = {
@@ -23,9 +36,5 @@ export type ParamValue = {
 }
 
 export async function getParamValues(): Promise<ParamValue[]> {
-  const res = await fetch("http://localhost:3000/api/param-values")
-  if (!res.ok) {
-    throw new Error(`fetch /api/param-values failed (${res.status})`)
-  }
-  return res.json()
+  return fetchJson("/api/param-values")
 }
