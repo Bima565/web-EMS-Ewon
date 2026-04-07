@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import * as XLSX from "xlsx"
+import { useLiveParams } from "../hooks/useLiveParams"
 import "./style-HistoryReport.css"
 
 const TRACKED_TAGS = [
@@ -66,9 +67,9 @@ type DayDetailMetric = DayDetailMetricConfig & {
 const API_BASE = "http://localhost:3000"
 const WEEKLY_REFRESH_MS = 5 * 60 * 1000
 const DAILY_REFRESH_MS = 30 * 1000
-const LIVE_REFRESH_MS = 15 * 1000
 
 const XLSX_HEADERS = ["Hari", "Tanggal", "Rata-rata", "Progress (%)", ...TRACKED_TAGS]
+const HISTORY_REPORT_CACHE_KEY = "web-ewon:history-report:v1"
 
 const DAY_DETAIL_CONFIG: DayDetailMetricConfig[] = [
   {
@@ -167,68 +168,55 @@ const formatMetricValue = (
     ? `${value.toLocaleString("id-ID", { maximumFractionDigits })} ${unit}`
     : `- ${unit}`
 
+type HistoryReportCache = {
+  weekData: WeeklyDay[]
+  selectedDay: string
+  dailyCache: Record<string, DailyResponse>
+}
+
+const readHistoryReportCache = (): HistoryReportCache => {
+  if (typeof window === "undefined") {
+    return { weekData: [], selectedDay: "", dailyCache: {} }
+  }
+
+  try {
+    const raw = window.sessionStorage.getItem(HISTORY_REPORT_CACHE_KEY)
+    if (!raw) {
+      return { weekData: [], selectedDay: "", dailyCache: {} }
+    }
+
+    const parsed = JSON.parse(raw) as Partial<HistoryReportCache>
+    return {
+      weekData: normalizeWeeklyData(parsed.weekData ?? []),
+      selectedDay: parsed.selectedDay ?? "",
+      dailyCache: parsed.dailyCache ?? {},
+    }
+  } catch (error) {
+    console.error("failed to read history report cache", error)
+    return { weekData: [], selectedDay: "", dailyCache: {} }
+  }
+}
+
+const persistHistoryReportCache = (cache: HistoryReportCache) => {
+  if (typeof window === "undefined") return
+  try {
+    window.sessionStorage.setItem(HISTORY_REPORT_CACHE_KEY, JSON.stringify(cache))
+  } catch (error) {
+    console.error("failed to persist history report cache", error)
+  }
+}
+
 export default function HistoryReport() {
-  const [weekData, setWeekData] = useState<WeeklyDay[]>([])
-  const [loadingWeek, setLoadingWeek] = useState(false)
+  const cachedReport = useMemo(() => readHistoryReportCache(), [])
+  const [weekData, setWeekData] = useState<WeeklyDay[]>(cachedReport.weekData)
+  const [loadingWeek, setLoadingWeek] = useState(cachedReport.weekData.length === 0)
   const [weekError, setWeekError] = useState<string | null>(null)
-  const [selectedDay, setSelectedDay] = useState("")
-  const [dailyCache, setDailyCache] = useState<Record<string, DailyResponse>>({})
+  const [selectedDay, setSelectedDay] = useState(cachedReport.selectedDay)
+  const [dailyCache, setDailyCache] = useState<Record<string, DailyResponse>>(cachedReport.dailyCache)
   const [loadingDay, setLoadingDay] = useState(false)
   const [dayError, setDayError] = useState<string | null>(null)
-  const [latestParams, setLatestParams] = useState<Array<{ tag: string; value: number | null }>>([])
-  const [loadingLive, setLoadingLive] = useState(false)
-  const [liveError, setLiveError] = useState<string | null>(null)
   const dailyCacheRef = useRef(dailyCache)
-  const initialLiveLoadRef = useRef(true)
-
-  useEffect(() => {
-    let isMounted = true
-
-    const loadRealtime = () => {
-      if (initialLiveLoadRef.current) {
-        setLoadingLive(true)
-      }
-      setLiveError(null)
-
-      fetch(`${API_BASE}/api/param-values`)
-        .then(async (res) => {
-          if (!res.ok) throw new Error("tidak bisa memuat data realtime")
-          return (await res.json()) as Array<{ TagName: string; Value: number }>
-        })
-        .then((params) => {
-          if (!isMounted) return
-          const filtered = params
-            .filter((param) => TRACKED_TAGS.includes(param.TagName))
-            .map((param) => ({
-              tag: param.TagName,
-              value: Number.isFinite(param.Value) ? param.Value : null,
-            }))
-          setLatestParams(filtered)
-          if (initialLiveLoadRef.current) {
-            setLoadingLive(false)
-            initialLiveLoadRef.current = false
-          }
-        })
-        .catch((err) => {
-          console.error(err)
-          if (isMounted) {
-            setLiveError("Gagal memuat data realtime")
-            if (initialLiveLoadRef.current) {
-              setLoadingLive(false)
-              initialLiveLoadRef.current = false
-            }
-          }
-        })
-    }
-
-    loadRealtime()
-    const timer = setInterval(loadRealtime, LIVE_REFRESH_MS)
-
-    return () => {
-      isMounted = false
-      clearInterval(timer)
-    }
-  }, [])
+  const { params: liveParams, status: liveStatus } = useLiveParams()
 
   const selectedMonth = useMemo(() => {
     if (!selectedDay) return ""
@@ -238,12 +226,34 @@ export default function HistoryReport() {
     })
   }, [selectedDay])
 
+  const latestParams = useMemo(
+    () =>
+      liveParams
+        .filter((param) => TRACKED_TAGS.includes(param.TagName))
+        .map((param) => ({
+          tag: param.TagName,
+          value: Number.isFinite(param.Value) ? param.Value : null,
+        })),
+    [liveParams],
+  )
+
+  const loadingLive = liveStatus === "loading" && latestParams.length === 0
+  const liveError = liveStatus === "error" ? "Gagal memuat data realtime" : null
+
   useEffect(() => {
     dailyCacheRef.current = dailyCache
   }, [dailyCache])
 
+  useEffect(() => {
+    persistHistoryReportCache({
+      weekData,
+      selectedDay,
+      dailyCache,
+    })
+  }, [dailyCache, selectedDay, weekData])
+
   const fetchWeeklyData = useCallback(() => {
-    setLoadingWeek(true)
+    setLoadingWeek((prev) => prev || weekData.length === 0)
     setWeekError(null)
 
     fetch(
@@ -258,7 +268,12 @@ export default function HistoryReport() {
       .then((data) => {
         const normalized = normalizeWeeklyData(data.week ?? [])
         setWeekData(normalized)
-        setSelectedDay((prev) => prev || (normalized.at(-1)?.date ?? ""))
+        setSelectedDay((prev) => {
+          if (prev && normalized.some((day) => day.date === prev)) {
+            return prev
+          }
+          return normalized.at(-1)?.date ?? ""
+        })
       })
       .catch((err) => {
         console.error(err)
@@ -267,7 +282,7 @@ export default function HistoryReport() {
       .finally(() => {
         setLoadingWeek(false)
       })
-  }, [])
+  }, [weekData.length])
 
   useEffect(() => {
     fetchWeeklyData()
@@ -348,7 +363,7 @@ export default function HistoryReport() {
     if (!force && dailyCacheRef.current[date]) {
       return
     }
-    setLoadingDay(true)
+    setLoadingDay(!dailyCacheRef.current[date])
     setDayError(null)
 
     fetch(`${API_BASE}/api/logs/day/${date}`)
