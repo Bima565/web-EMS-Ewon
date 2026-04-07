@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import ReactECharts from "echarts-for-react"
+import * as XLSX from "xlsx"
 import "./style-HistoryReport.css"
 
 const TRACKED_TAGS = [
@@ -36,25 +36,136 @@ type DailyResponse = {
   tags: Record<string, Array<{ timestamp: string; value: number }>>
 }
 
-type HourlyPoint = [number, number]
-const MAX_SERIES_POINTS = 800
+type WeeklyTableRow = {
+  day: WeeklyDay
+  tagDetails: Array<{ tag: string; value: number | null }>
+  average: number | null
+  progress: number
+}
+
+type DayDetailMetricConfig = {
+  tag: string
+  label: string
+  unit: string
+  color: string
+  standard: number
+  standardLabel: string
+  summaryMode: "avg" | "last"
+  decimals?: number
+}
+
+type DayDetailMetric = DayDetailMetricConfig & {
+  value: number | null
+  average: number | null
+  last: number | null
+  min: number | null
+  max: number | null
+  fillPercent: number
+}
 
 const API_BASE = "http://localhost:3000"
 const WEEKLY_REFRESH_MS = 5 * 60 * 1000
 const DAILY_REFRESH_MS = 30 * 1000
 const LIVE_REFRESH_MS = 15 * 1000
 
+const XLSX_HEADERS = ["Hari", "Tanggal", "Rata-rata", "Progress (%)", ...TRACKED_TAGS]
+
+const DAY_DETAIL_CONFIG: DayDetailMetricConfig[] = [
+  {
+    tag: "pm139KWH",
+    label: "Energi",
+    unit: "kWh",
+    color: "#34d399",
+    standard: 25,
+    standardLabel: "Patokan laporan 25 kWh",
+    summaryMode: "last",
+    decimals: 3,
+  },
+  {
+    tag: "pm139AR",
+    label: "Arus R",
+    unit: "A",
+    color: "#38bdf8",
+    standard: 1,
+    standardLabel: "Patokan operasi 1 A",
+    summaryMode: "avg",
+    decimals: 3,
+  },
+  {
+    tag: "pm139P",
+    label: "Daya nyata",
+    unit: "kW",
+    color: "#a855f7",
+    standard: 1,
+    standardLabel: "Patokan operasi 1 kW",
+    summaryMode: "avg",
+    decimals: 3,
+  },
+  {
+    tag: "pm139App",
+    label: "Daya semu",
+    unit: "kVA",
+    color: "#f97316",
+    standard: 1,
+    standardLabel: "Patokan operasi 1 kVA",
+    summaryMode: "avg",
+    decimals: 3,
+  },
+  {
+    tag: "pm139VAN",
+    label: "Tegangan VAN",
+    unit: "V",
+    color: "#22d3ee",
+    standard: 220,
+    standardLabel: "Nominal 220 V",
+    summaryMode: "avg",
+    decimals: 1,
+  },
+  {
+    tag: "pm139F",
+    label: "Frekuensi",
+    unit: "Hz",
+    color: "#facc15",
+    standard: 50,
+    standardLabel: "Nominal 50 Hz",
+    summaryMode: "avg",
+    decimals: 3,
+  },
+]
+
 const normalizeWeeklyData = (entries: WeeklyDay[]) => {
-  if (!entries.length) return entries
-  return [...entries].sort(
-    (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
-  )
+  if (!entries.length) return []
+  return [...entries]
+    .map((entry) => {
+      const dateObject = new Date(entry.date)
+      const computedDisplayDate =
+        entry.displayDate ??
+        dateObject.toLocaleDateString("id-ID", {
+          weekday: "short",
+          day: "2-digit",
+          month: "short",
+        })
+      return {
+        ...entry,
+        displayDate: computedDisplayDate,
+      }
+    })
+    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
 }
 
 const formatWeeklyValue = (value: number | null) =>
   value != null
     ? value.toLocaleString("id-ID", { maximumFractionDigits: 4 })
     : "-"
+
+const formatMetricValue = (
+  value: number | null,
+  unit: string,
+  maximumFractionDigits = 3,
+) =>
+  value != null
+    ? `${value.toLocaleString("id-ID", { maximumFractionDigits })} ${unit}`
+    : `- ${unit}`
 
 export default function HistoryReport() {
   const [weekData, setWeekData] = useState<WeeklyDay[]>([])
@@ -177,26 +288,61 @@ export default function HistoryReport() {
     return values.length ? Math.max(...values) : 1
   }, [weekData])
 
-  const weeklyTableRows = useMemo(
-    () =>
-      weekData.map((day) => {
-        const tagDetails = TRACKED_TAGS.map((tag) => ({
-          tag,
-          value: day.stats[tag]?.last ?? null,
-        }))
-        const numericValues = tagDetails
-          .map((entry) => entry.value)
-          .filter((value): value is number => Number.isFinite(value))
-        const average = numericValues.length
-          ? numericValues.reduce((acc, value) => acc + value, 0) / numericValues.length
-          : 0
-        const progress = weeklyMaxValue
-          ? Math.round(Math.min(100, (average / weeklyMaxValue) * 100))
-          : 0
-        return { day, tagDetails, average, progress }
-      }),
-    [weekData, weeklyMaxValue],
-  )
+  const weeklyTableRows = useMemo<WeeklyTableRow[]>(() => {
+    return weekData.map((day) => {
+      const tagDetails = TRACKED_TAGS.map((tag) => ({
+        tag,
+        value: day.stats[tag]?.last ?? null,
+      }))
+      const numericValues = tagDetails
+        .map((entry) => entry.value)
+        .filter((value): value is number => Number.isFinite(value))
+      const average = numericValues.length
+        ? numericValues.reduce((acc, value) => acc + value, 0) / numericValues.length
+        : null
+      const score = average ?? 0
+      const progress = weeklyMaxValue
+        ? Math.round(Math.min(100, (score / weeklyMaxValue) * 100))
+        : 0
+      return { day, tagDetails, average, progress }
+    })
+  }, [weekData, weeklyMaxValue])
+
+  const weeklyExportRows = useMemo(() => {
+    return weeklyTableRows.map((row) => {
+      const record: Record<string, string | number | null> = {
+        Hari: row.day.label,
+        Tanggal: row.day.displayDate ?? row.day.date,
+        "Rata-rata": row.average ?? null,
+        "Progress (%)": row.progress,
+      }
+      row.tagDetails.forEach((detail) => {
+        record[detail.tag] = detail.value ?? null
+      })
+      return record
+    })
+  }, [weeklyTableRows])
+
+  const exportWeeklyXLS = useCallback(() => {
+    if (!weeklyExportRows.length || typeof document === "undefined") {
+      return
+    }
+    const workbook = XLSX.utils.book_new()
+    const worksheet = XLSX.utils.json_to_sheet(weeklyExportRows, {
+      header: XLSX_HEADERS,
+    })
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Rekap Mingguan")
+    const rawData = XLSX.write(workbook, { bookType: "xlsx", type: "array" })
+    const blob = new Blob([rawData], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement("a")
+    anchor.href = url
+    anchor.download = `rekap-mingguan-${new Date().toISOString().slice(0, 10)}.xlsx`
+    anchor.click()
+    URL.revokeObjectURL(url)
+  }, [weeklyExportRows])
 
   const fetchDayDetail = useCallback((date: string, force = false) => {
     if (!force && dailyCacheRef.current[date]) {
@@ -240,151 +386,43 @@ export default function HistoryReport() {
   }
 
   const dailyDetail = selectedDay ? dailyCache[selectedDay] : undefined
+  const selectedWeekDay = useMemo(
+    () => weekData.find((day) => day.date === selectedDay) ?? null,
+    [selectedDay, weekData],
+  )
 
-  const downsampleHourlyEntries = (entries: Array<{ timestamp: string; value: number }>) => {
-    if (entries.length <= MAX_SERIES_POINTS) {
-      return entries
-    }
-    const step = Math.ceil(entries.length / MAX_SERIES_POINTS)
-    return entries.filter((_, index) => index % step === 0)
-  }
+  const dailyBarMetrics = useMemo<DayDetailMetric[]>(() => {
+    return DAY_DETAIL_CONFIG.map((config) => {
+      const entries = (dailyDetail?.tags[config.tag] ?? [])
+        .filter((entry) => Number.isFinite(entry.value))
+        .slice()
+        .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
 
-  const hourlyChartOption = useMemo(() => {
-    if (!dailyDetail) return null
+      const values = entries.map((entry) => Number(entry.value))
+      const fallbackStats = selectedWeekDay?.stats[config.tag]
+      const average = values.length
+        ? values.reduce((acc, value) => acc + value, 0) / values.length
+        : fallbackStats?.avg ?? null
+      const last = values.length ? values.at(-1) ?? null : fallbackStats?.last ?? null
+      const min = values.length ? Math.min(...values) : fallbackStats?.min ?? null
+      const max = values.length ? Math.max(...values) : fallbackStats?.max ?? null
+      const value = config.summaryMode === "last" ? last : average
+      const fillPercent =
+        value != null && config.standard > 0
+          ? Math.max(0, Math.min(100, (value / config.standard) * 100))
+          : 0
 
-    const buildSeries = (): Array<{
-      name: string
-      type: "line"
-      smooth: boolean
-      showSymbol: boolean
-      connectNulls: boolean
-      emphasis: { focus: "series" }
-      data: HourlyPoint[]
-    }> =>
-      TRACKED_TAGS.map((tag) => {
-        const entries = (dailyDetail.tags[tag] ?? []).slice()
-        entries.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
-        const sampled = downsampleHourlyEntries(entries)
-        const data = sampled.map(
-          (entry) => [new Date(entry.timestamp).getTime(), Number(entry.value)] as HourlyPoint,
-        )
-        return {
-          name: tag,
-          type: "line",
-          smooth: true,
-          showSymbol: false,
-          connectNulls: false,
-          emphasis: { focus: "series" },
-          data,
-        }
-      })
-
-    const series = buildSeries()
-
-    const timestamps = series
-      .flatMap((serie) => serie.data.map((point: [number, number]) => point[0]))
-      .filter((value) => Number.isFinite(value))
-      .sort((a, b) => a - b)
-
-    const BREAK_THRESHOLD_MS = 90 * 60 * 1000
-    const BREAK_GAP = "1%"
-    const breaks: Array<{ start: number; end: number; gap: string }> = []
-    for (let i = 1; i < timestamps.length; i += 1) {
-      const prev = timestamps[i - 1]
-      const curr = timestamps[i]
-      if (curr - prev > BREAK_THRESHOLD_MS) {
-        breaks.push({ start: prev, end: curr, gap: BREAK_GAP })
+      return {
+        ...config,
+        value,
+        average,
+        last,
+        min,
+        max,
+        fillPercent,
       }
-    }
-
-    const selectedDayNumber = selectedDay ? Number(selectedDay.slice(-2)) : null
-
-    const formatTime = (value: number) => {
-      const date = new Date(value)
-      const label = `${String(date.getHours()).padStart(2, "0")}:${String(
-        date.getMinutes(),
-      ).padStart(2, "0")}`
-      if (selectedDayNumber && date.getDate() !== selectedDayNumber) {
-        return `${label}\n${date.getDate()}/${date.getMonth() + 1}`
-      }
-      return label
-    }
-
-    return {
-      tooltip: {
-        trigger: "axis",
-        axisPointer: {
-          type: "cross",
-        },
-        formatter: (params: any) => {
-          if (!Array.isArray(params)) return ""
-          const header = formatTime(params[0]?.axisValue ?? 0)
-          const lines = params
-            .map((item: any) => {
-              const val = item?.data?.[1] ?? "—"
-              return `${item.marker} ${item.seriesName}: ${
-                typeof val === "number" ? val.toLocaleString("id-ID", { maximumFractionDigits: 4 }) : "—"
-              }`
-            })
-            .join("<br/>")
-          return `${header}<br/>${lines}`
-        },
-      },
-      legend: {
-        data: TRACKED_TAGS,
-        top: 0,
-        textStyle: {
-          color: "rgba(248, 250, 252, 0.9)",
-        },
-      },
-      grid: {
-        left: "3%",
-        right: "3%",
-        bottom: "18%",
-        top: "12%",
-        containLabel: true,
-      },
-      xAxis: {
-        type: "time",
-        axisLine: { lineStyle: { color: "rgba(148, 163, 184, 0.6)" } },
-        axisLabel: { color: "rgba(248, 250, 252, 0.8)" },
-        axisPointer: {
-          label: {
-            formatter: ({ value }: any) => formatTime(value),
-          },
-        },
-        breaks,
-        breakArea: {
-          expandOnClick: false,
-          zigzagAmplitude: 0,
-          zigzagZ: 200,
-          itemStyle: {
-            borderColor: "none",
-            opacity: 0,
-          },
-        },
-      },
-      yAxis: {
-        type: "value",
-        axisLine: { show: false },
-        axisLabel: { color: "rgba(248, 250, 252, 0.8)" },
-        splitLine: { lineStyle: { color: "rgba(148, 163, 184, 0.2)" } },
-        min: "auto",
-      },
-      dataZoom: [
-        {
-          type: "inside",
-          minValueSpan: 3600 * 1000,
-        },
-        {
-          type: "slider",
-          top: "75%",
-          minValueSpan: 3600 * 1000,
-        },
-      ],
-      series,
-    }
-  }, [dailyDetail, selectedDay])
+    })
+  }, [dailyDetail, selectedWeekDay])
 
 
   return (
@@ -453,14 +491,13 @@ export default function HistoryReport() {
                     </p>
                   </div>
                   <div className="history-week-table-actions">
-                    <button type="button" className="history-week-btn history-week-btn--ghost">
-                      Filter
-                    </button>
-                    <button type="button" className="history-week-btn history-week-btn--ghost">
-                      Settings
-                    </button>
-                    <button type="button" className="history-week-btn history-week-btn--solid">
-                      Tambah data
+                    <button
+                      type="button"
+                      className="history-week-btn history-week-btn--solid"
+                      onClick={exportWeeklyXLS}
+                      disabled={!weeklyTableRows.length || loadingWeek}
+                    >
+                      Ekspor XLS
                     </button>
                   </div>
                 </div>
@@ -562,7 +599,7 @@ export default function HistoryReport() {
                   <p>{day.displayDate ?? day.date}</p>
                 </div>
                 <button type="button" onClick={() => handleSelectDay(day.date)}>
-                  {isActive ? "Tampilkan per jam" : "Lihat detail"}
+                  {isActive ? "Detail aktif" : "Lihat detail"}
                 </button>
               </header>
               <div className="history-day-metrics">
@@ -581,9 +618,52 @@ export default function HistoryReport() {
                 <div className="history-day-detail">
                   {loadingDay && !dailyDetail && <p>Memuat data harian...</p>}
                   {dayError && <p className="history-day-error">{dayError}</p>}
-                  {hourlyChartOption && (
-                    <ReactECharts option={hourlyChartOption} style={{ height: 280 }} />
-                  )}
+                  <div className="history-day-detail-header">
+                    <div>
+                      <strong>Grafik batang harian</strong>
+                      <p>Ringkasan per parameter dengan satuan dan patokan standar.</p>
+                    </div>
+                  </div>
+                  <div className="history-day-bars">
+                    {dailyBarMetrics.map((metric) => (
+                      <article key={metric.tag} className="history-day-bar-card">
+                        <div className="history-day-bar-top">
+                          <div>
+                            <p className="history-day-bar-label">{metric.label}</p>
+                            <span className="history-day-bar-standard">
+                              {metric.standardLabel}
+                            </span>
+                          </div>
+                          <strong className="history-day-bar-value">
+                            {formatMetricValue(metric.value, metric.unit, metric.decimals ?? 3)}
+                          </strong>
+                        </div>
+                        <div className="history-day-bar-track">
+                          <span
+                            className="history-day-bar-fill"
+                            style={{
+                              width: `${metric.fillPercent}%`,
+                              background: `linear-gradient(90deg, ${metric.color}, rgba(255,255,255,0.92))`,
+                            }}
+                          />
+                        </div>
+                        <div className="history-day-bar-meta">
+                          <span>
+                            Avg {formatMetricValue(metric.average, metric.unit, metric.decimals ?? 3)}
+                          </span>
+                          <span>
+                            Last {formatMetricValue(metric.last, metric.unit, metric.decimals ?? 3)}
+                          </span>
+                          <span>
+                            Min {formatMetricValue(metric.min, metric.unit, metric.decimals ?? 3)}
+                          </span>
+                          <span>
+                            Max {formatMetricValue(metric.max, metric.unit, metric.decimals ?? 3)}
+                          </span>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
                 </div>
               )}
             </article>
