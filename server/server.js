@@ -20,6 +20,7 @@ const WEEK_DAYS = 7
 const RETENTION_DAYS = 14
 const RETENTION_INTERVAL_MS = 6 * 60 * 60 * 1000
 const PARAM_POLL_INTERVAL_MS = 15 * 1000
+const REPORT_TIME_ZONE = "Asia/Jakarta"
 
 const latestParamSnapshot = {
   values: [],
@@ -225,17 +226,6 @@ app.get("/api/param-values", (req, res) => {
 })
 
 const DAY_MS = 24 * 60 * 60 * 1000
-const DISPLAY_DAY_OFFSET = 1
-
-const safeTimeZone = (value) => {
-  if (!value || typeof value !== "string") return "Asia/Jakarta"
-  try {
-    Intl.DateTimeFormat(undefined, { timeZone: value })
-    return value
-  } catch {
-    return "Asia/Jakarta"
-  }
-}
 
 const formatDayLabel = (date, timeZone) =>
   new Intl.DateTimeFormat("id-ID", {
@@ -263,30 +253,55 @@ const getTimeZoneParts = (date, timeZone) => {
   return parts
 }
 
+const getTimeZoneOffsetMs = (timestamp, timeZone) => {
+  const parts = getTimeZoneParts(new Date(timestamp), timeZone)
+  return (
+    Date.UTC(
+      parts.year,
+      parts.month - 1,
+      parts.day,
+      parts.hour,
+      parts.minute,
+      parts.second,
+    ) - timestamp
+  )
+}
+
+const getTimeZoneDayStartMs = (year, month, day, timeZone) => {
+  const reference = Date.UTC(year, month - 1, day, 12, 0, 0)
+  const offset = getTimeZoneOffsetMs(reference, timeZone)
+  return Date.UTC(year, month - 1, day, 0, 0, 0) - offset
+}
+
 const formatPartsToDate = (parts) =>
   `${parts.year}-${String(parts.month).padStart(2, "0")}-${String(parts.day).padStart(
     2,
     "0",
   )}`
 
-const buildWeeklyResponse = (rows, startDate, timeZone) => {
+const buildWeeklyResponse = (rows, anchorTimestamp) => {
+  const anchorDate = new Date(anchorTimestamp)
+  const anchorParts = getTimeZoneParts(anchorDate, REPORT_TIME_ZONE)
+  const anchorMidnight = getTimeZoneDayStartMs(
+    anchorParts.year,
+    anchorParts.month,
+    anchorParts.day,
+    REPORT_TIME_ZONE,
+  )
+  const startTimestamp = anchorMidnight - (WEEK_DAYS - 1) * DAY_MS
   const dayMap = new Map()
   for (let i = 0; i < WEEK_DAYS; i += 1) {
-    const timestamp = startDate.getTime() + i * DAY_MS
+    const timestamp = startTimestamp + i * DAY_MS
     const date = new Date(timestamp)
-    const parts = getTimeZoneParts(date, timeZone)
+    const parts = getTimeZoneParts(date, REPORT_TIME_ZONE)
     const key = `${parts.year}-${String(parts.month).padStart(2, "0")}-${String(
       parts.day,
     ).padStart(2, "0")}`
     dayMap.set(key, {
       date: key,
-      label: formatDayLabel(date, timeZone),
-      displayDate: formatPartsToDate(
-        getTimeZoneParts(
-          new Date(timestamp + DISPLAY_DAY_OFFSET * DAY_MS),
-          timeZone,
-        ),
-      ),
+      label: formatDayLabel(date, REPORT_TIME_ZONE),
+      displayParts: parts,
+      displayReferenceTime: date.getTime(),
       stats: {},
     })
   }
@@ -295,12 +310,18 @@ const buildWeeklyResponse = (rows, startDate, timeZone) => {
     const tag = row.tag_name
     if (!TRACKED_TAGS.includes(tag)) return
     const createdAt = new Date(row.created_at)
-    const parts = getTimeZoneParts(createdAt, timeZone)
+    const parts = getTimeZoneParts(createdAt, REPORT_TIME_ZONE)
     const key = `${parts.year}-${String(parts.month).padStart(2, "0")}-${String(
       parts.day,
     ).padStart(2, "0")}`
     const day = dayMap.get(key)
     if (!day) return
+
+    const timestamp = createdAt.getTime()
+    if (!day.displayReferenceTime || timestamp >= day.displayReferenceTime) {
+      day.displayReferenceTime = timestamp
+      day.displayParts = parts
+    }
 
     const tagStats = day.stats[tag] ?? {
       count: 0,
@@ -327,7 +348,13 @@ const buildWeeklyResponse = (rows, startDate, timeZone) => {
   const week = Array.from(dayMap.values()).map((day) => ({
     date: day.date,
     label: day.label,
-    displayDate: day.displayDate ?? day.date,
+    displayDate: formatPartsToDate(
+      day.displayParts ??
+        getTimeZoneParts(
+          new Date(`${day.date}T00:00:00Z`),
+          REPORT_TIME_ZONE,
+        ),
+    ),
     stats: TRACKED_TAGS.reduce((acc, tag) => {
       const entry = day.stats[tag]
       const avg =
@@ -346,29 +373,43 @@ const buildWeeklyResponse = (rows, startDate, timeZone) => {
 }
 
 app.get("/api/logs/weekly", async (req, res) => {
-  const timeZone = safeTimeZone(
-    typeof req.query.tz === "string" ? req.query.tz : undefined,
-  )
   const now = new Date()
-  const nowParts = getTimeZoneParts(now, timeZone)
-  const localMidnight = Date.UTC(
-    nowParts.year,
-    nowParts.month - 1,
-    nowParts.day,
-    0,
-    0,
-    0,
-  )
-  const startTimestamp = localMidnight - (WEEK_DAYS - 1) * DAY_MS
-  const start = new Date(startTimestamp)
   try {
+    const [[{ latest }]] = await logsDb
+      .promise()
+      .query(
+        "SELECT MAX(created_at) AS latest FROM ewon_tag_logs WHERE tag_name IN (?)",
+        [TRACKED_TAGS],
+      )
+    const latestTimestamp = latest ? new Date(latest).getTime() : 0
+    const nowTimestamp = now.getTime()
+    const todayParts = getTimeZoneParts(now, REPORT_TIME_ZONE)
+    const todayMidnight = getTimeZoneDayStartMs(
+      todayParts.year,
+      todayParts.month,
+      todayParts.day,
+      REPORT_TIME_ZONE,
+    )
+    const todayEnd = todayMidnight + DAY_MS - 1
+    const anchorCandidate = latestTimestamp || nowTimestamp
+    const anchorTimestamp = Math.min(anchorCandidate, todayEnd)
+    const anchorDate = new Date(anchorTimestamp)
+    const anchorParts = getTimeZoneParts(anchorDate, REPORT_TIME_ZONE)
+    const anchorMidnight = getTimeZoneDayStartMs(
+      anchorParts.year,
+      anchorParts.month,
+      anchorParts.day,
+      REPORT_TIME_ZONE,
+    )
+    const listStart = new Date(anchorMidnight - (WEEK_DAYS - 1) * DAY_MS)
+    const listEnd = new Date(anchorMidnight + DAY_MS)
     const [rows] = await logsDb
       .promise()
       .query(
-        "SELECT tag_name, value, created_at FROM ewon_tag_logs WHERE tag_name IN (?) AND created_at BETWEEN ? AND ? ORDER BY created_at ASC",
-        [TRACKED_TAGS, start, now],
+        "SELECT tag_name, value, created_at FROM ewon_tag_logs WHERE tag_name IN (?) AND created_at >= ? AND created_at < ? ORDER BY created_at ASC",
+        [TRACKED_TAGS, listStart, listEnd],
       )
-    res.json(buildWeeklyResponse(rows, start, timeZone))
+    res.json(buildWeeklyResponse(rows, anchorTimestamp))
   } catch (error) {
     console.error("failed to load weekly logs", error)
     res.status(500).json({ message: "Tidak dapat mengambil data mingguan" })
@@ -380,9 +421,10 @@ app.get("/api/logs/day/:date", async (req, res) => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     return res.status(400).json({ message: "format tanggal harus YYYY-MM-DD" })
   }
-  const start = new Date(`${date}T00:00:00`)
-  const end = new Date(start)
-  end.setDate(end.getDate() + 1)
+  const [year, month, day] = date.split("-").map((part) => Number(part))
+  const startMs = getTimeZoneDayStartMs(year, month, day, REPORT_TIME_ZONE)
+  const start = new Date(startMs)
+  const end = new Date(startMs + DAY_MS)
 
   try {
     const [rows] = await logsDb
