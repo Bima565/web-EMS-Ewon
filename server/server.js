@@ -21,6 +21,11 @@ const RETENTION_DAYS = 14
 const RETENTION_INTERVAL_MS = 6 * 60 * 60 * 1000
 const PARAM_POLL_INTERVAL_MS = 15 * 1000
 const PARAM_FETCH_TIMEOUT_MS = 12 * 1000
+const PARAM_FETCH_RETRY_DELAY_MS = 1500
+const PARAM_FETCH_MAX_ATTEMPTS = 2
+const PARAM_STALE_THRESHOLD_MS = PARAM_POLL_INTERVAL_MS * 3
+const HEALTHCHECK_DB_TIMEOUT_MS = 5 * 1000
+const SHUTDOWN_FORCE_EXIT_MS = 10 * 1000
 const REPORT_TIME_ZONE = "Asia/Jakarta"
 
 const latestParamSnapshot = {
@@ -28,6 +33,98 @@ const latestParamSnapshot = {
   updatedAt: null,
 }
 let isParamPolling = false
+let isSweepingOldLogs = false
+let isShuttingDown = false
+let shutdownPromise = null
+let paramPollTimer = null
+let retentionTimer = null
+let httpServer = null
+
+const paramPollingState = {
+  lastSuccessAt: null,
+  lastErrorAt: null,
+  lastErrorMessage: null,
+  consecutiveFailures: 0,
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+const formatPollingError = (error) => {
+  if (!error) return "unknown error"
+
+  const causeCode = error.cause?.code
+  if (causeCode) {
+    return `${error.message} (cause: ${causeCode})`
+  }
+
+  return error.message ?? String(error)
+}
+
+const isTransientPollingError = (error) => {
+  if (!error) return false
+
+  const causeCode = error.cause?.code
+  return (
+    error.name === "TimeoutError" ||
+    causeCode === "UND_ERR_SOCKET" ||
+    causeCode === "UND_ERR_CONNECT_TIMEOUT" ||
+    causeCode === "ECONNRESET" ||
+    causeCode === "ETIMEDOUT"
+  )
+}
+
+const getParamSnapshotAgeMs = () => {
+  if (!latestParamSnapshot.updatedAt) return null
+  return Date.now() - new Date(latestParamSnapshot.updatedAt).getTime()
+}
+
+const isParamSnapshotStale = () => {
+  const ageMs = getParamSnapshotAgeMs()
+  return ageMs !== null && ageMs > PARAM_STALE_THRESHOLD_MS
+}
+
+const withTimeout = (promise, timeoutMs, label) =>
+  new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${timeoutMs}ms`))
+    }, timeoutMs)
+    timer.unref?.()
+
+    promise
+      .then((value) => {
+        clearTimeout(timer)
+        resolve(value)
+      })
+      .catch((error) => {
+        clearTimeout(timer)
+        reject(error)
+      })
+  })
+
+const checkPoolHealth = async (pool, label) => {
+  try {
+    await withTimeout(
+      pool.promise().query("SELECT 1 AS ok"),
+      HEALTHCHECK_DB_TIMEOUT_MS,
+      `${label} health check`,
+    )
+    return { status: "up" }
+  } catch (error) {
+    return {
+      status: "down",
+      error: formatPollingError(error),
+    }
+  }
+}
+
+const closePool = async (pool, label) => {
+  try {
+    await pool.promise().end()
+    logLifecycle(`${label} pool closed`)
+  } catch (error) {
+    console.error(`failed to close ${label} pool`, error)
+  }
+}
 
 const parseParamLines = (text) =>
   text
@@ -98,44 +195,65 @@ const logParamValues = async (params) => {
     await logsDb
       .promise()
       .query("INSERT INTO ewon_tag_logs (tag_name, value) VALUES ?", [filtered])
-    const cutoff = new Date(Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000)
-    await logsDb.promise().query(
-      "DELETE FROM ewon_tag_logs WHERE created_at < ?",
-      [cutoff],
-    )
   } catch (error) {
     console.error("failed to write log entries", error)
   }
 }
 
 const refreshParamSnapshot = async () => {
-  const response = await fetch(PARAM_URL, {
-    headers: {
-      Authorization: PARAM_AUTH,
-    },
-    signal: AbortSignal.timeout(PARAM_FETCH_TIMEOUT_MS),
-  })
+  let lastError = null
 
-  if (!response.ok) {
-    const body = await response.text().catch(() => "unable to read body")
-    throw new Error(
-      `param polling failed with status ${response.status}: ${response.statusText} (${body})`,
-    )
+  for (let attempt = 1; attempt <= PARAM_FETCH_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      const response = await fetch(PARAM_URL, {
+        headers: {
+          Authorization: PARAM_AUTH,
+          Connection: "close",
+        },
+        signal: AbortSignal.timeout(PARAM_FETCH_TIMEOUT_MS),
+      })
+
+      if (!response.ok) {
+        const body = await response.text().catch(() => "unable to read body")
+        throw new Error(
+          `param polling failed with status ${response.status}: ${response.statusText} (${body})`,
+        )
+      }
+
+      const text = await response.text()
+      const data = parseParamLines(text)
+
+      latestParamSnapshot.values = data
+      latestParamSnapshot.updatedAt = new Date().toISOString()
+      paramPollingState.lastSuccessAt = latestParamSnapshot.updatedAt
+      paramPollingState.lastErrorMessage = null
+      paramPollingState.consecutiveFailures = 0
+      await logParamValues(data)
+      console.log(
+        `Param snapshot refreshed (${data.length} entries) @${latestParamSnapshot.updatedAt}`,
+      )
+      return
+    } catch (error) {
+      lastError = error
+
+      if (attempt >= PARAM_FETCH_MAX_ATTEMPTS || !isTransientPollingError(error)) {
+        throw error
+      }
+
+      console.warn(
+        `param polling transient failure on attempt ${attempt}/${PARAM_FETCH_MAX_ATTEMPTS}: ${formatPollingError(error)}; retrying in ${PARAM_FETCH_RETRY_DELAY_MS}ms`,
+      )
+      await sleep(PARAM_FETCH_RETRY_DELAY_MS)
+    }
   }
 
-  const text = await response.text()
-  const data = parseParamLines(text)
-
-  latestParamSnapshot.values = data
-  latestParamSnapshot.updatedAt = new Date().toISOString()
-  await logParamValues(data)
-  console.log(
-    `Param snapshot refreshed (${data.length} entries) @${latestParamSnapshot.updatedAt}`,
-  )
+  throw lastError
 }
 
 const startParamPolling = () => {
   const runner = () => {
+    if (isShuttingDown) return
+
     if (isParamPolling) {
       console.warn("param polling skipped because previous fetch is still running")
       return
@@ -144,7 +262,10 @@ const startParamPolling = () => {
     isParamPolling = true
     refreshParamSnapshot()
       .catch((error) => {
-        console.error("param polling error", error)
+        paramPollingState.lastErrorAt = new Date().toISOString()
+        paramPollingState.lastErrorMessage = formatPollingError(error)
+        paramPollingState.consecutiveFailures += 1
+        console.error(`param polling error: ${formatPollingError(error)}`)
       })
       .finally(() => {
         isParamPolling = false
@@ -154,20 +275,29 @@ const startParamPolling = () => {
   return setInterval(runner, PARAM_POLL_INTERVAL_MS)
 }
 
-startParamPolling()
+paramPollTimer = startParamPolling()
 
 const sweepOldLogs = async () => {
+  if (isShuttingDown || isSweepingOldLogs) return
+
+  isSweepingOldLogs = true
   try {
     const cutoff = new Date(Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000)
-    await logsDb
+    const [result] = await logsDb
       .promise()
       .query("DELETE FROM ewon_tag_logs WHERE created_at < ?", [cutoff])
+    console.log(`old log sweep completed, deleted ${result.affectedRows ?? 0} rows`)
   } catch (error) {
     console.error("failed to sweep old logs", error)
+  } finally {
+    isSweepingOldLogs = false
   }
 }
 
-setInterval(sweepOldLogs, RETENTION_INTERVAL_MS)
+void sweepOldLogs()
+retentionTimer = setInterval(() => {
+  void sweepOldLogs()
+}, RETENTION_INTERVAL_MS)
 
 /* ======================
    API ENDPOINT
@@ -234,8 +364,51 @@ app.get("/api/param-values", (req, res) => {
   if (latestParamSnapshot.updatedAt) {
     res.setHeader("X-Param-Updated-At", latestParamSnapshot.updatedAt)
   }
+  res.setHeader("X-Param-Stale", String(isParamSnapshotStale()))
 
   res.json(latestParamSnapshot.values)
+})
+
+app.get("/api/health", async (req, res) => {
+  const [mainDb, logsDbHealth] = await Promise.all([
+    checkPoolHealth(db, "main database"),
+    checkPoolHealth(logsDb, "logs database"),
+  ])
+
+  const snapshotAgeMs = getParamSnapshotAgeMs()
+  const snapshotStale = isParamSnapshotStale()
+  const paramStatus = !latestParamSnapshot.updatedAt
+    ? "starting"
+    : snapshotStale || paramPollingState.consecutiveFailures > 0
+      ? "degraded"
+      : "up"
+  const overallStatus =
+    mainDb.status === "up" &&
+    logsDbHealth.status === "up" &&
+    (paramStatus === "up" || paramStatus === "starting")
+      ? "ok"
+      : "degraded"
+
+  res.status(overallStatus === "ok" ? 200 : 503).json({
+    status: overallStatus,
+    timestamp: new Date().toISOString(),
+    uptimeSec: Math.round(process.uptime()),
+    shuttingDown: isShuttingDown,
+    paramPolling: {
+      status: paramStatus,
+      updatedAt: latestParamSnapshot.updatedAt,
+      ageMs: snapshotAgeMs,
+      stale: snapshotStale,
+      consecutiveFailures: paramPollingState.consecutiveFailures,
+      lastSuccessAt: paramPollingState.lastSuccessAt,
+      lastErrorAt: paramPollingState.lastErrorAt,
+      lastErrorMessage: paramPollingState.lastErrorMessage,
+    },
+    databases: {
+      main: mainDb,
+      logs: logsDbHealth,
+    },
+  })
 })
 
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -487,26 +660,75 @@ const logLifecycle = (message) => {
   console.log(`[lifecycle][${timestamp}] ${message}`)
 }
 
-const shutdown = (signal, code = 0) => {
-  logLifecycle(`received ${signal}, exiting with code ${code}`)
-  process.exit(code)
+const closeHttpServer = async () => {
+  if (!httpServer) return
+
+  await new Promise((resolve, reject) => {
+    httpServer.close((error) => {
+      if (error) {
+        reject(error)
+        return
+      }
+      resolve()
+    })
+  })
+  logLifecycle("http server closed")
 }
 
-process.on("SIGINT", () => shutdown("SIGINT", 0))
-process.on("SIGTERM", () => shutdown("SIGTERM", 0))
-process.on("SIGBREAK", () => shutdown("SIGBREAK", 0))
+const shutdown = (signal, code = 0) => {
+  if (shutdownPromise) return shutdownPromise
+
+  isShuttingDown = true
+  logLifecycle(`received ${signal}, shutting down with code ${code}`)
+
+  if (paramPollTimer) {
+    clearInterval(paramPollTimer)
+    paramPollTimer = null
+  }
+  if (retentionTimer) {
+    clearInterval(retentionTimer)
+    retentionTimer = null
+  }
+
+  const forceExitTimer = setTimeout(() => {
+    logLifecycle(`force exiting after ${SHUTDOWN_FORCE_EXIT_MS}ms`)
+    process.exit(code)
+  }, SHUTDOWN_FORCE_EXIT_MS)
+  forceExitTimer.unref?.()
+
+  shutdownPromise = Promise.allSettled([
+    closeHttpServer(),
+    closePool(db, "main database"),
+    closePool(logsDb, "logs database"),
+  ]).finally(() => {
+    clearTimeout(forceExitTimer)
+    process.exit(code)
+  })
+
+  return shutdownPromise
+}
+
+process.on("SIGINT", () => {
+  void shutdown("SIGINT", 0)
+})
+process.on("SIGTERM", () => {
+  void shutdown("SIGTERM", 0)
+})
+process.on("SIGBREAK", () => {
+  void shutdown("SIGBREAK", 0)
+})
 process.on("uncaughtException", (error) => {
   console.error("uncaughtException", error)
-  shutdown("uncaughtException", 1)
+  void shutdown("uncaughtException", 1)
 })
 process.on("unhandledRejection", (reason) => {
   console.error("unhandledRejection", reason)
-  shutdown("unhandledRejection", 1)
+  void shutdown("unhandledRejection", 1)
 })
 process.on("exit", (code) => {
   logLifecycle(`process.exit detected with code ${code}`)
 })
 
-app.listen(PORT, () => {
+httpServer = app.listen(PORT, () => {
   console.log("Server running http://localhost:" + PORT)
 })

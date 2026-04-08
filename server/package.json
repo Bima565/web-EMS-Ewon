@@ -4,6 +4,12 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "service:install": "node service-manager.js install",
+    "service:uninstall": "node service-manager.js uninstall",
+    "service:start": "node service-manager.js start",
+    "service:stop": "node service-manager.js stop",
+    "service:restart": "node service-manager.js restart",
+    "service:status": "node service-manager.js status",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -14,6 +20,7 @@
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "mysql2": "^3.19.1",
+    "node-windows": "^1.0.0-beta.8",
     "path": "^0.12.7"
   }
 }
