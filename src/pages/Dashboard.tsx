@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
-import { getPanels } from "../api/api"
-import ComparisonKwhChart from "../components/ComparisonKwhChart"
+import { getDailyKwhSummary, getPanels, type DailyKwhSummary } from "../api/api"
 import DashboardChart from "../components/DashboardChart"
 import ParamChart from "../components/ParamChart"
 import { useLiveParams } from "../hooks/useLiveParams"
@@ -13,7 +12,7 @@ const trafficMetrics = [
   { label: "Daya", tag: "pm139P", unit: "kW", accent: "indigo" },
   { label: "Frekuensi", tag: "pm139F", unit: "Hz", accent: "amber" },
 ]
-const KWH_TARIFF = 1444.7
+const DAILY_SUMMARY_REFRESH_MS = 60 * 1000
 
 const formatClock = (value: number | null) =>
   value == null
@@ -25,6 +24,35 @@ const formatClock = (value: number | null) =>
         hour12: false,
       })
 
+const formatNumber = (value: number | null, maximumFractionDigits = 3) =>
+  value == null
+    ? "-"
+    : value.toLocaleString("id-ID", {
+        maximumFractionDigits,
+      })
+
+const formatDateTime = (value: string | null) =>
+  value == null
+    ? "-"
+    : new Date(value).toLocaleString("id-ID", {
+        day: "2-digit",
+        month: "short",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      })
+
+const formatKgLabel = (value: number | null) =>
+  value == null
+    ? "-"
+    : `${value.toLocaleString("id-ID", { maximumFractionDigits: 3 })} kg`
+
+const formatEmissionFactor = (value: number) =>
+  value.toLocaleString("id-ID", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
+
 const formatCurrency = (value: number) =>
   value.toLocaleString("id-ID", {
     style: "currency",
@@ -34,6 +62,9 @@ const formatCurrency = (value: number) =>
 
 export default function Dashboard() {
   const [panels, setPanels] = useState<Panel[]>([])
+  const [dailySummary, setDailySummary] = useState<DailyKwhSummary | null>(null)
+  const [dailySummaryLoading, setDailySummaryLoading] = useState(true)
+  const [dailySummaryError, setDailySummaryError] = useState<string | null>(null)
   const { params, status, lastSync, history } = useLiveParams()
 
   useEffect(() => {
@@ -58,6 +89,37 @@ export default function Dashboard() {
     }
   }, [])
 
+  useEffect(() => {
+    let mounted = true
+
+    const loadDailySummary = async () => {
+      try {
+        const data = await getDailyKwhSummary()
+        if (!mounted) return
+        setDailySummary(data)
+        setDailySummaryError(null)
+      } catch (error) {
+        console.error("failed to load daily kwh summary", error)
+        if (!mounted) return
+        setDailySummaryError("Ringkasan CO2e harian belum tersedia")
+      } finally {
+        if (mounted) {
+          setDailySummaryLoading(false)
+        }
+      }
+    }
+
+    void loadDailySummary()
+    const timer = window.setInterval(() => {
+      void loadDailySummary()
+    }, DAILY_SUMMARY_REFRESH_MS)
+
+    return () => {
+      mounted = false
+      window.clearInterval(timer)
+    }
+  }, [])
+
   const activeMetrics = useMemo(
     () =>
       trafficMetrics.map((metric) => {
@@ -77,23 +139,18 @@ export default function Dashboard() {
     return kwhHistory[kwhHistory.length - 1].value - kwhHistory[0].value
   }, [kwhHistory])
 
-  const kwhChangePercent = useMemo(() => {
-    if (kwhHistory.length < 2) return 0
-    const latest = kwhHistory[kwhHistory.length - 1].value
-    const previous = kwhHistory[kwhHistory.length - 2].value
-    if (!previous) return 0
-    return ((latest - previous) / previous) * 100
-  }, [kwhHistory])
-
-  const dailyKwhEstimate = useMemo(() => usageDelta * 24, [usageDelta])
-  const dailyCostEstimate = useMemo(() => dailyKwhEstimate * KWH_TARIFF, [dailyKwhEstimate])
-
   const dashboardStatus =
     status === "error"
       ? "Koneksi live terganggu"
       : status === "loading"
       ? "Memuat telemetri"
       : "Live 1 jam tersimpan"
+
+  const dailyConsumptionKwh = dailySummary?.consumptionKwh ?? null
+  const dailyCostEstimate = dailySummary?.costEstimateIdr ?? null
+  const dailyCo2eKg = dailySummary?.co2eKg ?? null
+  const emissionFactor = dailySummary?.emissionFactorKgPerKwh ?? 0.85
+  const tariffPerKwh = dailySummary?.tariffPerKwh ?? 1444.7
 
   const summaryStats = [
     { label: "Panel aktif", value: panels.length.toString() },
@@ -156,22 +213,36 @@ export default function Dashboard() {
           </article>
 
           <article className="dashboard-card dashboard-change-card">
-            <p className="dashboard-section-label">Change in Cost</p>
+            <p className="dashboard-section-label">Estimated Cost</p>
             <div className="dashboard-change-figure">
-              <strong>{formatCurrency(dailyCostEstimate)}</strong>
+              <strong>
+                {dailySummaryLoading
+                  ? "Memuat..."
+                  : dailyCostEstimate == null
+                    ? "-"
+                    : formatCurrency(dailyCostEstimate)}
+              </strong>
               <span>
-                estimasi biaya per hari pada tarif Rp1.444,70/kWh
+                estimasi biaya per hari dari data SQL ewon-logs pada tarif Rp
+                {formatEmissionFactor(tariffPerKwh)}/kWh
               </span>
               <span>
-                perubahan live{" "}
-                {kwhChangePercent.toLocaleString("id-ID", {
-                  maximumFractionDigits: 2,
-                  signDisplay: "always",
-                })}
-                %
+                konsumsi energi harian database {formatNumber(dailyConsumptionKwh)} kWh
               </span>
+              <span>
+                total emisi hari ini {dailySummaryLoading ? "Memuat..." : formatKgLabel(dailyCo2eKg)} CO2e
+              </span>
+              <span>
+                perhitungan: {formatNumber(dailyConsumptionKwh)} kWh x {formatEmissionFactor(emissionFactor)}{" "}
+                kg/kWh
+              </span>
+              <span>
+                data harian database ewon-logs, awal {formatNumber(dailySummary?.startReading ?? null)}{" "}
+                kWh dan akhir {formatNumber(dailySummary?.endReading ?? null)} kWh
+              </span>
+              <span>update terakhir {formatDateTime(dailySummary?.lastTimestamp ?? null)}</span>
+              {dailySummaryError && <span>{dailySummaryError}</span>}
             </div>
-            <ComparisonKwhChart />
           </article>
         </section>
 

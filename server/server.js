@@ -27,6 +27,8 @@ const PARAM_STALE_THRESHOLD_MS = PARAM_POLL_INTERVAL_MS * 3
 const HEALTHCHECK_DB_TIMEOUT_MS = 5 * 1000
 const SHUTDOWN_FORCE_EXIT_MS = 10 * 1000
 const REPORT_TIME_ZONE = "Asia/Jakarta"
+const CO2E_PER_KWH_KG = 0.85
+const KWH_TARIFF = 1444.7
 
 const latestParamSnapshot = {
   values: [],
@@ -48,6 +50,70 @@ const paramPollingState = {
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+const toLogLevelMethod = (level) => {
+  if (level === "error") return "error"
+  if (level === "warn") return "warn"
+  return "log"
+}
+
+const normalizeError = (error) => {
+  if (!error) {
+    return { message: "unknown error" }
+  }
+
+  if (typeof error === "string") {
+    return { message: error }
+  }
+
+  const normalized = {
+    name: error.name,
+    message: error.message ?? String(error),
+    code: error.code,
+    errno: error.errno,
+    syscall: error.syscall,
+    address: error.address,
+    port: error.port,
+    status: error.status,
+    statusCode: error.statusCode,
+    sqlState: error.sqlState,
+    sqlMessage: error.sqlMessage,
+  }
+
+  if (error.cause?.code) {
+    normalized.causeCode = error.cause.code
+  }
+  if (error.cause?.message) {
+    normalized.causeMessage = error.cause.message
+  }
+  if (error.stack) {
+    normalized.stack = error.stack
+  }
+
+  return Object.fromEntries(Object.entries(normalized).filter(([, value]) => value !== undefined))
+}
+
+const logEvent = (scope, level, message, details = null) => {
+  const timestamp = new Date().toISOString()
+  const method = toLogLevelMethod(level)
+  const suffix =
+    details && Object.keys(details).length
+      ? ` ${JSON.stringify(details)}`
+      : ""
+  console[method](`[${scope}][${timestamp}][${level}] ${message}${suffix}`)
+}
+
+const logInfo = (scope, message, details) => {
+  logEvent(scope, "info", message, details)
+}
+
+const logWarn = (scope, message, details) => {
+  logEvent(scope, "warn", message, details)
+}
+
+const logError = (scope, message, details) => {
+  logEvent(scope, "error", message, details)
+}
 
 const formatPollingError = (error) => {
   if (!error) return "unknown error"
@@ -122,7 +188,23 @@ const closePool = async (pool, label) => {
     await pool.promise().end()
     logLifecycle(`${label} pool closed`)
   } catch (error) {
-    console.error(`failed to close ${label} pool`, error)
+    logError("lifecycle", `failed to close ${label} pool`, {
+      label,
+      error: normalizeError(error),
+    })
+  }
+}
+
+const runLoggedQuery = async (pool, scope, operation, sql, params = [], context = {}) => {
+  try {
+    return await pool.promise().query(sql, params)
+  } catch (error) {
+    logError(scope, `${operation} failed`, {
+      operation,
+      ...context,
+      error: normalizeError(error),
+    })
+    throw error
   }
 }
 
@@ -145,6 +227,44 @@ const parseParamLines = (text) =>
 
 app.use(cors())
 app.use(express.json())
+app.use((req, res, next) => {
+  if (!req.path.startsWith("/api")) {
+    next()
+    return
+  }
+
+  const startedAt = Date.now()
+
+  res.on("finish", () => {
+    if (res.statusCode < 400) return
+
+    const details = {
+      method: req.method,
+      path: req.originalUrl,
+      statusCode: res.statusCode,
+      durationMs: Date.now() - startedAt,
+    }
+
+    if (res.statusCode >= 500) {
+      logError("api", "request completed with server error", details)
+      return
+    }
+
+    logWarn("api", "request completed with client error", details)
+  })
+
+  res.on("close", () => {
+    if (res.writableEnded) return
+
+    logWarn("api", "request aborted before response completed", {
+      method: req.method,
+      path: req.originalUrl,
+      durationMs: Date.now() - startedAt,
+    })
+  })
+
+  next()
+})
 
 // koneksi database
 const dbConfig = {
@@ -167,21 +287,24 @@ const createPool = (database) =>
 const db = createPool("ewon")
 const logsDb = createPool("ewon-logs")
 
-const connectTo = (pool, name) => {
+const connectTo = (pool, scope, name) => {
   pool.getConnection((err, connection) => {
     if (connection) {
       connection.release()
     }
     if (err) {
-      console.log(`${name} error`, err)
+      logError(scope, `${name} connection failed`, {
+        database: name,
+        error: normalizeError(err),
+      })
       return
     }
-    console.log(`${name} connected`)
+    logInfo(scope, `${name} connected`, { database: name })
   })
 }
 
-connectTo(db, "Database")
-connectTo(logsDb, "Logs database")
+connectTo(db, "db-main", "ewon")
+connectTo(logsDb, "db-write", "ewon-logs")
 
 const logParamValues = async (params) => {
   if (!params?.length) return
@@ -191,13 +314,18 @@ const logParamValues = async (params) => {
 
   if (!filtered.length) return
 
-  try {
-    await logsDb
-      .promise()
-      .query("INSERT INTO ewon_tag_logs (tag_name, value) VALUES ?", [filtered])
-  } catch (error) {
-    console.error("failed to write log entries", error)
-  }
+  await runLoggedQuery(
+    logsDb,
+    "db-write",
+    "insert ewon_tag_logs",
+    "INSERT INTO ewon_tag_logs (tag_name, value) VALUES ?",
+    [filtered],
+    {
+      database: "ewon-logs",
+      rowCount: filtered.length,
+      tags: filtered.map(([tagName]) => tagName),
+    },
+  )
 }
 
 const refreshParamSnapshot = async () => {
@@ -205,6 +333,7 @@ const refreshParamSnapshot = async () => {
 
   for (let attempt = 1; attempt <= PARAM_FETCH_MAX_ATTEMPTS; attempt += 1) {
     try {
+      const startedAt = Date.now()
       const response = await fetch(PARAM_URL, {
         headers: {
           Authorization: PARAM_AUTH,
@@ -228,10 +357,23 @@ const refreshParamSnapshot = async () => {
       paramPollingState.lastSuccessAt = latestParamSnapshot.updatedAt
       paramPollingState.lastErrorMessage = null
       paramPollingState.consecutiveFailures = 0
-      await logParamValues(data)
-      console.log(
-        `Param snapshot refreshed (${data.length} entries) @${latestParamSnapshot.updatedAt}`,
-      )
+      logInfo("ewon-fetch", "param snapshot refreshed", {
+        url: PARAM_URL,
+        entryCount: data.length,
+        durationMs: Date.now() - startedAt,
+        updatedAt: latestParamSnapshot.updatedAt,
+      })
+
+      try {
+        await logParamValues(data)
+      } catch (error) {
+        logWarn("ewon-fetch", "snapshot fetched but database write failed", {
+          updatedAt: latestParamSnapshot.updatedAt,
+          entryCount: data.length,
+          error: normalizeError(error),
+        })
+      }
+
       return
     } catch (error) {
       lastError = error
@@ -240,9 +382,13 @@ const refreshParamSnapshot = async () => {
         throw error
       }
 
-      console.warn(
-        `param polling transient failure on attempt ${attempt}/${PARAM_FETCH_MAX_ATTEMPTS}: ${formatPollingError(error)}; retrying in ${PARAM_FETCH_RETRY_DELAY_MS}ms`,
-      )
+      logWarn("ewon-fetch", "transient polling failure, retrying", {
+        url: PARAM_URL,
+        attempt,
+        maxAttempts: PARAM_FETCH_MAX_ATTEMPTS,
+        retryDelayMs: PARAM_FETCH_RETRY_DELAY_MS,
+        error: normalizeError(error),
+      })
       await sleep(PARAM_FETCH_RETRY_DELAY_MS)
     }
   }
@@ -255,7 +401,9 @@ const startParamPolling = () => {
     if (isShuttingDown) return
 
     if (isParamPolling) {
-      console.warn("param polling skipped because previous fetch is still running")
+      logWarn("ewon-fetch", "polling skipped because previous fetch is still running", {
+        intervalMs: PARAM_POLL_INTERVAL_MS,
+      })
       return
     }
 
@@ -265,7 +413,12 @@ const startParamPolling = () => {
         paramPollingState.lastErrorAt = new Date().toISOString()
         paramPollingState.lastErrorMessage = formatPollingError(error)
         paramPollingState.consecutiveFailures += 1
-        console.error(`param polling error: ${formatPollingError(error)}`)
+        logError("ewon-fetch", "param polling failed", {
+          url: PARAM_URL,
+          consecutiveFailures: paramPollingState.consecutiveFailures,
+          lastErrorAt: paramPollingState.lastErrorAt,
+          error: normalizeError(error),
+        })
       })
       .finally(() => {
         isParamPolling = false
@@ -283,12 +436,29 @@ const sweepOldLogs = async () => {
   isSweepingOldLogs = true
   try {
     const cutoff = new Date(Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000)
-    const [result] = await logsDb
-      .promise()
-      .query("DELETE FROM ewon_tag_logs WHERE created_at < ?", [cutoff])
-    console.log(`old log sweep completed, deleted ${result.affectedRows ?? 0} rows`)
+    const [result] = await runLoggedQuery(
+      logsDb,
+      "db-write",
+      "delete old ewon_tag_logs",
+      "DELETE FROM ewon_tag_logs WHERE created_at < ?",
+      [cutoff],
+      {
+        database: "ewon-logs",
+        retentionDays: RETENTION_DAYS,
+        cutoff: cutoff.toISOString(),
+      },
+    )
+    logInfo("db-write", "old log sweep completed", {
+      database: "ewon-logs",
+      deletedRows: result.affectedRows ?? 0,
+      cutoff: cutoff.toISOString(),
+    })
   } catch (error) {
-    console.error("failed to sweep old logs", error)
+    logError("db-write", "failed to sweep old logs", {
+      database: "ewon-logs",
+      retentionDays: RETENTION_DAYS,
+      error: normalizeError(error),
+    })
   } finally {
     isSweepingOldLogs = false
   }
@@ -304,58 +474,80 @@ retentionTimer = setInterval(() => {
 ====================== */
 
 // list panel
-app.get("/api/panels", (req, res) => {
+app.get("/api/panels", async (req, res) => {
+  try {
+    const [result] = await runLoggedQuery(
+      db,
+      "db-main",
+      "select panels",
+      "SELECT id, tagname, tagdesc FROM tagmst",
+      [],
+      {
+        route: "/api/panels",
+        database: "ewon",
+      },
+    )
 
-   db.query(
-    "SELECT id, tagname, tagdesc FROM tagmst",
-    (err, result) => {
-
-      if (err) return res.status(500).json(err)
-
-      res.json(result)
-
-    }
-  )
-
+    res.json(result)
+  } catch (error) {
+    res.status(500).json({ message: "Tidak dapat mengambil data panel" })
+  }
 })
 
 // realtime tag
-app.get("/api/realtime", (req, res) => {
+app.get("/api/realtime", async (req, res) => {
+  try {
+    const [result] = await runLoggedQuery(
+      db,
+      "db-main",
+      "select realtime tags",
+      "SELECT tagname,tagvalue,created FROM monitoring_tags",
+      [],
+      {
+        route: "/api/realtime",
+        database: "ewon",
+      },
+    )
 
-  db.query(
-    "SELECT tagname,tagvalue,created FROM monitoring_tags",
-    (err, result) => {
-
-      if (err) return res.status(500).json(err)
-
-      res.json(result)
-
-    }
-  )
-
+    res.json(result)
+  } catch (error) {
+    res.status(500).json({ message: "Tidak dapat mengambil data realtime" })
+  }
 })
 
 // history power
-app.get("/api/history/:tag", (req,res)=>{
+app.get("/api/history/:tag", async (req, res) => {
+  const tag = req.params.tag
 
-  const tag=req.params.tag
+  try {
+    const [result] = await runLoggedQuery(
+      db,
+      "db-main",
+      "select tag history",
+      "SELECT created,tagvalue FROM datamin WHERE tagname=? ORDER BY created DESC LIMIT 200",
+      [tag],
+      {
+        route: "/api/history/:tag",
+        database: "ewon",
+        tag,
+      },
+    )
 
-  db.query(
-    "SELECT created,tagvalue FROM datamin WHERE tagname=? ORDER BY created DESC LIMIT 200",
-    [tag],
-    (err,result)=>{
-
-      if(err) return res.status(500).json(err)
-
-      res.json(result)
-
-    }
-  )
-
+    res.json(result)
+  } catch (error) {
+    res.status(500).json({ message: "Tidak dapat mengambil history tag" })
+  }
 })
 
 app.get("/api/param-values", (req, res) => {
   if (!latestParamSnapshot.values.length) {
+    logWarn("api", "param values requested before first Ewon snapshot was ready", {
+      method: req.method,
+      path: req.originalUrl,
+      paramStatus: paramPollingState.lastErrorMessage ? "error" : "starting",
+      lastErrorAt: paramPollingState.lastErrorAt,
+      lastErrorMessage: paramPollingState.lastErrorMessage,
+    })
     return res.status(503).json({
       message: "Data param belum tersedia, sedang mencoba mengambil dari Ewon",
     })
@@ -388,6 +580,17 @@ app.get("/api/health", async (req, res) => {
     (paramStatus === "up" || paramStatus === "starting")
       ? "ok"
       : "degraded"
+
+  if (overallStatus !== "ok") {
+    logWarn("api", "health check reported degraded status", {
+      method: req.method,
+      path: req.originalUrl,
+      overallStatus,
+      paramStatus,
+      mainDb,
+      logsDb: logsDbHealth,
+    })
+  }
 
   res.status(overallStatus === "ok" ? 200 : 503).json({
     status: overallStatus,
@@ -464,6 +667,11 @@ const formatPartsToDate = (parts) =>
     2,
     "0",
   )}`
+
+const normalizeDailyConsumption = (startValue, endValue) => {
+  if (!Number.isFinite(startValue) || !Number.isFinite(endValue)) return null
+  return Number(Math.max(0, endValue - startValue).toFixed(3))
+}
 
 const buildWeeklyResponse = (rows, anchorTimestamp) => {
   const anchorDate = new Date(anchorTimestamp)
@@ -561,12 +769,18 @@ const buildWeeklyResponse = (rows, anchorTimestamp) => {
 app.get("/api/logs/weekly", async (req, res) => {
   const now = new Date()
   try {
-    const [[{ latest }]] = await logsDb
-      .promise()
-      .query(
-        "SELECT MAX(created_at) AS latest FROM ewon_tag_logs WHERE tag_name IN (?)",
-        [TRACKED_TAGS],
-      )
+    const [[{ latest }]] = await runLoggedQuery(
+      logsDb,
+      "db-write",
+      "select latest weekly anchor",
+      "SELECT MAX(created_at) AS latest FROM ewon_tag_logs WHERE tag_name IN (?)",
+      [TRACKED_TAGS],
+      {
+        route: "/api/logs/weekly",
+        database: "ewon-logs",
+        tagCount: TRACKED_TAGS.length,
+      },
+    )
     const latestTimestamp = latest ? new Date(latest).getTime() : 0
     const nowTimestamp = now.getTime()
     const todayParts = getTimeZoneParts(now, REPORT_TIME_ZONE)
@@ -589,15 +803,21 @@ app.get("/api/logs/weekly", async (req, res) => {
     )
     const listStart = new Date(anchorMidnight - (WEEK_DAYS - 1) * DAY_MS)
     const listEnd = new Date(anchorMidnight + DAY_MS)
-    const [rows] = await logsDb
-      .promise()
-      .query(
-        "SELECT tag_name, value, created_at FROM ewon_tag_logs WHERE tag_name IN (?) AND created_at >= ? AND created_at < ? ORDER BY created_at ASC",
-        [TRACKED_TAGS, listStart, listEnd],
-      )
+    const [rows] = await runLoggedQuery(
+      logsDb,
+      "db-write",
+      "select weekly logs",
+      "SELECT tag_name, value, created_at FROM ewon_tag_logs WHERE tag_name IN (?) AND created_at >= ? AND created_at < ? ORDER BY created_at ASC",
+      [TRACKED_TAGS, listStart, listEnd],
+      {
+        route: "/api/logs/weekly",
+        database: "ewon-logs",
+        from: listStart.toISOString(),
+        to: listEnd.toISOString(),
+      },
+    )
     res.json(buildWeeklyResponse(rows, anchorTimestamp))
   } catch (error) {
-    console.error("failed to load weekly logs", error)
     res.status(500).json({ message: "Tidak dapat mengambil data mingguan" })
   }
 })
@@ -613,12 +833,20 @@ app.get("/api/logs/day/:date", async (req, res) => {
   const end = new Date(startMs + DAY_MS)
 
   try {
-    const [rows] = await logsDb
-      .promise()
-      .query(
-        "SELECT tag_name, value, created_at FROM ewon_tag_logs WHERE tag_name IN (?) AND created_at >= ? AND created_at < ? ORDER BY created_at ASC",
-        [TRACKED_TAGS, start, end],
-      )
+    const [rows] = await runLoggedQuery(
+      logsDb,
+      "db-write",
+      "select daily logs",
+      "SELECT tag_name, value, created_at FROM ewon_tag_logs WHERE tag_name IN (?) AND created_at >= ? AND created_at < ? ORDER BY created_at ASC",
+      [TRACKED_TAGS, start, end],
+      {
+        route: "/api/logs/day/:date",
+        database: "ewon-logs",
+        date,
+        from: start.toISOString(),
+        to: end.toISOString(),
+      },
+    )
     const detail = TRACKED_TAGS.reduce((acc, tag) => {
       acc[tag] = []
       return acc
@@ -632,8 +860,71 @@ app.get("/api/logs/day/:date", async (req, res) => {
     })
     res.json({ date, tags: detail })
   } catch (error) {
-    console.error("failed to load daily logs", error)
     res.status(500).json({ message: "Tidak dapat mengambil data harian" })
+  }
+})
+
+app.get("/api/logs/summary/daily", async (req, res) => {
+  const queryDate = typeof req.query.date === "string" ? req.query.date : ""
+  const targetDate =
+    queryDate ||
+    formatPartsToDate(getTimeZoneParts(new Date(), REPORT_TIME_ZONE))
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(targetDate)) {
+    return res.status(400).json({ message: "format tanggal harus YYYY-MM-DD" })
+  }
+
+  const [year, month, day] = targetDate.split("-").map((part) => Number(part))
+  const startMs = getTimeZoneDayStartMs(year, month, day, REPORT_TIME_ZONE)
+  const start = new Date(startMs)
+  const end = new Date(startMs + DAY_MS)
+
+  try {
+    const [rows] = await runLoggedQuery(
+      logsDb,
+      "db-write",
+      "select daily kwh summary",
+      "SELECT value, created_at FROM ewon_tag_logs WHERE tag_name = ? AND created_at >= ? AND created_at < ? ORDER BY created_at ASC",
+      ["pm139KWH", start, end],
+      {
+        route: "/api/logs/summary/daily",
+        database: "ewon-logs",
+        date: targetDate,
+        from: start.toISOString(),
+        to: end.toISOString(),
+      },
+    )
+
+    const firstRow = rows.at(0) ?? null
+    const lastRow = rows.at(-1) ?? null
+    const startReading = firstRow ? Number(firstRow.value) : null
+    const endReading = lastRow ? Number(lastRow.value) : null
+    const consumptionKwh = normalizeDailyConsumption(startReading, endReading)
+    const co2eKg =
+      consumptionKwh == null
+        ? null
+        : Number((consumptionKwh * CO2E_PER_KWH_KG).toFixed(3))
+    const costEstimateIdr =
+      consumptionKwh == null
+        ? null
+        : Number((consumptionKwh * KWH_TARIFF).toFixed(2))
+
+    res.json({
+      date: targetDate,
+      tag: "pm139KWH",
+      emissionFactorKgPerKwh: CO2E_PER_KWH_KG,
+      tariffPerKwh: KWH_TARIFF,
+      recordCount: rows.length,
+      startReading,
+      endReading,
+      consumptionKwh,
+      costEstimateIdr,
+      co2eKg,
+      firstTimestamp: firstRow ? new Date(firstRow.created_at).toISOString() : null,
+      lastTimestamp: lastRow ? new Date(lastRow.created_at).toISOString() : null,
+    })
+  } catch (error) {
+    res.status(500).json({ message: "Tidak dapat mengambil ringkasan konsumsi harian" })
   }
 })
 
@@ -649,6 +940,26 @@ app.use((req,res)=>{
   res.sendFile(path.join(clientPath,"index.html"))
 })
 
+app.use((error, req, res, next) => {
+  logError("api", "unhandled express error", {
+    method: req.method,
+    path: req.originalUrl,
+    error: normalizeError(error),
+  })
+
+  if (res.headersSent) {
+    next(error)
+    return
+  }
+
+  if (req.path.startsWith("/api")) {
+    res.status(500).json({ message: "Terjadi error internal pada API" })
+    return
+  }
+
+  res.status(500).send("Internal Server Error")
+})
+
 /* ======================
    START SERVER
 ====================== */
@@ -656,8 +967,7 @@ app.use((req,res)=>{
 const PORT = 3000
 
 const logLifecycle = (message) => {
-  const timestamp = new Date().toISOString()
-  console.log(`[lifecycle][${timestamp}] ${message}`)
+  logInfo("lifecycle", message)
 }
 
 const closeHttpServer = async () => {
@@ -718,11 +1028,15 @@ process.on("SIGBREAK", () => {
   void shutdown("SIGBREAK", 0)
 })
 process.on("uncaughtException", (error) => {
-  console.error("uncaughtException", error)
+  logError("lifecycle", "uncaughtException", {
+    error: normalizeError(error),
+  })
   void shutdown("uncaughtException", 1)
 })
 process.on("unhandledRejection", (reason) => {
-  console.error("unhandledRejection", reason)
+  logError("lifecycle", "unhandledRejection", {
+    error: normalizeError(reason),
+  })
   void shutdown("unhandledRejection", 1)
 })
 process.on("exit", (code) => {
@@ -730,5 +1044,17 @@ process.on("exit", (code) => {
 })
 
 httpServer = app.listen(PORT, () => {
-  console.log("Server running http://localhost:" + PORT)
+  logInfo("lifecycle", "server listening", {
+    url: "http://localhost:" + PORT,
+    port: PORT,
+    pollIntervalMs: PARAM_POLL_INTERVAL_MS,
+    retentionDays: RETENTION_DAYS,
+  })
+})
+
+httpServer.on("error", (error) => {
+  logError("lifecycle", "http server failed", {
+    port: PORT,
+    error: normalizeError(error),
+  })
 })

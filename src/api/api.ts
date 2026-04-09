@@ -38,3 +38,23 @@ export type ParamValue = {
 export async function getParamValues(): Promise<ParamValue[]> {
   return fetchJson("/api/param-values")
 }
+
+export type DailyKwhSummary = {
+  date: string
+  tag: string
+  emissionFactorKgPerKwh: number
+  tariffPerKwh: number
+  recordCount: number
+  startReading: number | null
+  endReading: number | null
+  consumptionKwh: number | null
+  costEstimateIdr: number | null
+  co2eKg: number | null
+  firstTimestamp: string | null
+  lastTimestamp: string | null
+}
+
+export async function getDailyKwhSummary(date?: string): Promise<DailyKwhSummary> {
+  const search = date ? `?date=${encodeURIComponent(date)}` : ""
+  return fetchJson(`/api/logs/summary/daily${search}`)
+}
