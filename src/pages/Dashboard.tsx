@@ -149,7 +149,6 @@ export default function Dashboard() {
   const dailyConsumptionKwh = dailySummary?.consumptionKwh ?? null
   const dailyCostEstimate = dailySummary?.costEstimateIdr ?? null
   const dailyCo2eKg = dailySummary?.co2eKg ?? null
-  const emissionFactor = dailySummary?.emissionFactorKgPerKwh ?? 0.85
   const tariffPerKwh = dailySummary?.tariffPerKwh ?? 1444.7
 
   const summaryStats = [
@@ -213,29 +212,33 @@ export default function Dashboard() {
           </article>
 
           <article className="dashboard-card dashboard-change-card">
-            <p className="dashboard-section-label">Estimated Cost</p>
-            <div className="dashboard-change-figure">
-              <strong>
-                {dailySummaryLoading
-                  ? "Memuat..."
-                  : dailyCostEstimate == null
-                    ? "-"
-                    : formatCurrency(dailyCostEstimate)}
-              </strong>
-              <span>
-                estimasi biaya per hari dari data SQL ewon-logs pada tarif Rp
-                {formatEmissionFactor(tariffPerKwh)}/kWh
-              </span>
-              <span>
-                konsumsi energi harian database {formatNumber(dailyConsumptionKwh)} kWh
-              </span>
-              <span>
-                total emisi hari ini {dailySummaryLoading ? "Memuat..." : formatKgLabel(dailyCo2eKg)} CO2e
-              </span>
-              <span>
-                perhitungan: {formatNumber(dailyConsumptionKwh)} kWh x {formatEmissionFactor(emissionFactor)}{" "}
-                kg/kWh
-              </span>
+            <p className="dashboard-section-label">Cost & Emission</p>
+            <div className="dashboard-change-grid">
+              <section className="dashboard-change-figure dashboard-change-figure--cost">
+                <p className="dashboard-change-box-label">Estimasi Cost</p>
+                <strong>
+                  {dailySummaryLoading
+                    ? "Memuat..."
+                    : dailyCostEstimate == null
+                      ? "-"
+                      : formatCurrency(dailyCostEstimate)}
+                </strong>
+                <span>estimasi biaya per hari dari database ewon-logs</span>
+                <span>tarif listrik Rp{formatEmissionFactor(tariffPerKwh)}/kWh</span>
+                <span>konsumsi harian {formatNumber(dailyConsumptionKwh)} kWh</span>
+              </section>
+
+              <section className="dashboard-change-figure dashboard-change-figure--emission">
+                <p className="dashboard-change-box-label">Emisi</p>
+                <strong>
+                  {dailySummaryLoading ? "Memuat..." : formatKgLabel(dailyCo2eKg)}
+                </strong>
+                <span>hasil emisi harian dari data database ewon-logs</span>
+                <span>berdasarkan konsumsi {formatNumber(dailyConsumptionKwh)} kWh</span>
+              </section>
+            </div>
+
+            <div className="dashboard-change-meta">
               <span>
                 data harian database ewon-logs, awal {formatNumber(dailySummary?.startReading ?? null)}{" "}
                 kWh dan akhir {formatNumber(dailySummary?.endReading ?? null)} kWh
