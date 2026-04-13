@@ -15,7 +15,7 @@ const TRACKED_TAGS = [
   "pm139App",
   "pm139VAN",
   "pm139F",
-]
+] 
 const WEEK_DAYS = 7
 const RETENTION_DAYS = 14
 const RETENTION_INTERVAL_MS = 6 * 60 * 60 * 1000
@@ -33,6 +33,9 @@ const KWH_TARIFF = 1444.7
 const latestParamSnapshot = {
   values: [],
   updatedAt: null,
+}
+const hourlyLogState = {
+  lastPersistedHourKey: null,
 }
 let isParamPolling = false
 let isSweepingOldLogs = false
@@ -306,6 +309,40 @@ const connectTo = (pool, scope, name) => {
 connectTo(db, "db-main", "ewon")
 connectTo(logsDb, "db-write", "ewon-logs")
 
+const getHourBucketKey = (date, timeZone) => {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    hour12: false,
+  })
+  const parts = {}
+  formatter.formatToParts(date).forEach((part) => {
+    if (part.type !== "literal") {
+      parts[part.type] = part.value
+    }
+  })
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:00`
+}
+
+const getLatestLoggedHourKey = async () => {
+  const [[{ latest }]] = await runLoggedQuery(
+    logsDb,
+    "db-write",
+    "select latest hourly log",
+    "SELECT MAX(created_at) AS latest FROM ewon_tag_logs WHERE tag_name IN (?)",
+    [TRACKED_TAGS],
+    {
+      database: "ewon-logs",
+      tagCount: TRACKED_TAGS.length,
+    },
+  )
+
+  return latest ? getHourBucketKey(new Date(latest), REPORT_TIME_ZONE) : null
+}
+
 const logParamValues = async (params) => {
   if (!params?.length) return
   const filtered = params
@@ -313,6 +350,15 @@ const logParamValues = async (params) => {
     .map((param) => [param.TagName, param.Value])
 
   if (!filtered.length) return
+
+  const currentHourKey = getHourBucketKey(new Date(), REPORT_TIME_ZONE)
+  if (hourlyLogState.lastPersistedHourKey === currentHourKey) return
+
+  const latestLoggedHourKey = await getLatestLoggedHourKey()
+  if (latestLoggedHourKey === currentHourKey) {
+    hourlyLogState.lastPersistedHourKey = currentHourKey
+    return
+  }
 
   await runLoggedQuery(
     logsDb,
@@ -322,10 +368,13 @@ const logParamValues = async (params) => {
     [filtered],
     {
       database: "ewon-logs",
+      hourBucket: currentHourKey,
       rowCount: filtered.length,
       tags: filtered.map(([tagName]) => tagName),
     },
   )
+
+  hourlyLogState.lastPersistedHourKey = currentHourKey
 }
 
 const refreshParamSnapshot = async () => {
