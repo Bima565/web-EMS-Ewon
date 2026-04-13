@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import ReactECharts from "echarts-for-react"
 import * as XLSX from "xlsx"
 import { useLiveParams } from "../hooks/useLiveParams"
 import "./style-HistoryReport.css"
@@ -74,10 +75,17 @@ type DayDetailMetric = DayDetailMetricConfig & {
   fillPercent: number
 }
 
+type HourlyMetricPoint = {
+  hour: number
+  label: string
+  value: number | null
+}
+
 const API_BASE = "http://localhost:3000"
 const WEEKLY_REFRESH_MS = 5 * 60 * 1000
 const DAILY_REFRESH_MS = 30 * 1000
 const WEEKLY_FETCH_TIMEOUT_MS = 12000
+const REPORT_TIME_ZONE = "Asia/Jakarta"
 
 const XLSX_HEADERS = ["Hari", "Tanggal", "Rata-rata", "Progress (%)", ...TRACKED_TAGS]
 const HISTORY_REPORT_CACHE_KEY = "web-ewon:history-report:v2"
@@ -179,6 +187,49 @@ const formatMetricValue = (
     ? `${value.toLocaleString("id-ID", { maximumFractionDigits })} ${unit}`
     : `- ${unit}`
 
+const getHourInTimeZone = (timestamp: string, timeZone: string) => {
+  const formatter = new Intl.DateTimeFormat("en-GB", {
+    timeZone,
+    hour: "2-digit",
+    hourCycle: "h23",
+  })
+  const parts = formatter.formatToParts(new Date(timestamp))
+  const hourPart = parts.find((part) => part.type === "hour")?.value ?? "0"
+  return Number(hourPart)
+}
+
+const buildHourlySeries = (
+  entries: Array<{ timestamp: string; value: number }>,
+  summaryMode: "avg" | "last",
+) => {
+  const buckets = Array.from({ length: 24 }, (_, hour) => ({
+    hour,
+    values: [] as number[],
+  }))
+
+  entries.forEach((entry) => {
+    const hour = getHourInTimeZone(entry.timestamp, REPORT_TIME_ZONE)
+    const bucket = buckets[hour]
+    if (!bucket) return
+    bucket.values.push(Number(entry.value))
+  })
+
+  return buckets.map((bucket) => {
+    const value =
+      bucket.values.length === 0
+        ? null
+        : summaryMode === "last"
+        ? bucket.values.at(-1) ?? null
+        : bucket.values.reduce((acc, current) => acc + current, 0) / bucket.values.length
+
+    return {
+      hour: bucket.hour,
+      label: `${String(bucket.hour).padStart(2, "0")}:00`,
+      value,
+    }
+  }) as HourlyMetricPoint[]
+}
+
 type HistoryReportCache = {
   weekData: WeeklyDay[]
   selectedDay: string
@@ -223,6 +274,7 @@ export default function HistoryReport() {
   const [loadingWeek, setLoadingWeek] = useState(cachedReport.weekData.length === 0)
   const [weekError, setWeekError] = useState<string | null>(null)
   const [selectedDay, setSelectedDay] = useState(cachedReport.selectedDay)
+  const [selectedHourlyTag, setSelectedHourlyTag] = useState("pm139KWH")
   const [dailyCache, setDailyCache] = useState<Record<string, DailyResponse>>(cachedReport.dailyCache)
   const [loadingDay, setLoadingDay] = useState(false)
   const [dayError, setDayError] = useState<string | null>(null)
@@ -262,6 +314,12 @@ export default function HistoryReport() {
       dailyCache,
     })
   }, [dailyCache, selectedDay, weekData])
+
+  useEffect(() => {
+    if (!TRACKED_TAGS.includes(selectedHourlyTag)) {
+      setSelectedHourlyTag("pm139KWH")
+    }
+  }, [selectedHourlyTag])
 
   const fetchWeeklyData = useCallback(() => {
     setLoadingWeek((prev) => prev || weekData.length === 0)
@@ -419,6 +477,146 @@ export default function HistoryReport() {
     [selectedDay, weekData],
   )
 
+  const selectedHourlyMetric = useMemo(
+    () => DAY_DETAIL_CONFIG.find((metric) => metric.tag === selectedHourlyTag) ?? DAY_DETAIL_CONFIG[0],
+    [selectedHourlyTag],
+  )
+
+  const hourlySeries = useMemo(() => {
+    const rawEntries = (dailyDetail?.tags[selectedHourlyMetric.tag] ?? []).filter((entry) =>
+      Number.isFinite(entry.value),
+    )
+    return buildHourlySeries(rawEntries, selectedHourlyMetric.summaryMode)
+  }, [dailyDetail, selectedHourlyMetric.tag, selectedHourlyMetric.summaryMode])
+
+  const hourlyChartOption = useMemo(() => {
+    const values = hourlySeries.map((point) => point.value)
+    const numericValues = values.filter((value): value is number => value != null)
+    const maxValue = numericValues.length ? Math.max(...numericValues) : 0
+    const benchmark = selectedHourlyMetric.standard
+    const seriesColor = selectedHourlyMetric.color
+
+    return {
+      backgroundColor: "transparent",
+      animationDuration: 650,
+      grid: {
+        left: 16,
+        right: 16,
+        top: 32,
+        bottom: 36,
+        containLabel: true,
+      },
+      tooltip: {
+        trigger: "axis",
+        backgroundColor: "rgba(15, 23, 42, 0.96)",
+        borderColor: "rgba(96, 165, 250, 0.35)",
+        textStyle: {
+          color: "#f8fafc",
+        },
+        axisPointer: {
+          type: "line",
+          lineStyle: {
+            color: "rgba(148, 163, 184, 0.6)",
+          },
+        },
+      },
+      xAxis: {
+        type: "category",
+        data: hourlySeries.map((point) => point.label),
+        boundaryGap: false,
+        axisLine: {
+          lineStyle: {
+            color: "rgba(148, 163, 184, 0.28)",
+          },
+        },
+        axisTick: {
+          show: false,
+        },
+        axisLabel: {
+          color: "rgba(226, 232, 240, 0.72)",
+          interval: 2,
+        },
+      },
+      yAxis: {
+        type: "value",
+        scale: true,
+        max: benchmark ? Math.max(maxValue, benchmark) * 1.15 : maxValue * 1.15 || undefined,
+        splitNumber: 4,
+        axisLabel: {
+          color: "rgba(226, 232, 240, 0.72)",
+        },
+        splitLine: {
+          lineStyle: {
+            color: "rgba(148, 163, 184, 0.14)",
+          },
+        },
+      },
+      series: [
+        {
+          name: selectedHourlyMetric.label,
+          type: "line",
+          smooth: true,
+          showSymbol: true,
+          symbol: "circle",
+          symbolSize: 8,
+          data: values,
+          connectNulls: false,
+          lineStyle: {
+            width: 3,
+            color: seriesColor,
+          },
+          itemStyle: {
+            color: seriesColor,
+            borderColor: "rgba(255,255,255,0.9)",
+            borderWidth: 2,
+          },
+          areaStyle: {
+            color: {
+              type: "linear",
+              x: 0,
+              y: 0,
+              x2: 0,
+              y2: 1,
+              colorStops: [
+                { offset: 0, color: `${seriesColor}CC` },
+                { offset: 1, color: "rgba(15, 23, 42, 0.04)" },
+              ],
+            },
+          },
+          markLine: benchmark
+            ? {
+                symbol: "none",
+                label: {
+                  color: "rgba(226, 232, 240, 0.8)",
+                },
+                lineStyle: {
+                  color: "rgba(251, 191, 36, 0.7)",
+                  type: "dashed",
+                },
+                data: [{ yAxis: benchmark, name: "Patokan" }],
+              }
+            : undefined,
+        },
+      ],
+      graphic:
+        values.every((value) => value == null)
+          ? [
+              {
+                type: "text",
+                left: "center",
+                top: "middle",
+                style: {
+                  text: "Tidak ada data jam untuk hari ini",
+                  fill: "rgba(226, 232, 240, 0.7)",
+                  fontSize: 14,
+                  fontWeight: 500,
+                },
+              },
+            ]
+          : [],
+    }
+  }, [hourlySeries, selectedHourlyMetric.color, selectedHourlyMetric.label, selectedHourlyMetric.standard])
+
   const dailyBarMetrics = useMemo<DayDetailMetric[]>(() => {
     return DAY_DETAIL_CONFIG.map((config) => {
       const entries = (dailyDetail?.tags[config.tag] ?? [])
@@ -515,7 +713,7 @@ export default function HistoryReport() {
                     <p className="history-week-table-meta">Summary mingguan</p>
                     <h2 className="history-week-table-title">Rekap seminggu</h2>
                     <p className="history-week-table-note">
-                      Progress menunjukkan kelengkapan data per 15 menit (00:00-24:00) untuk tiap hari.
+                      Progress menunjukkan kelengkapan data per jam (00:00-24:00) untuk tiap hari.
                     </p>
                   </div>
                   <div className="history-week-table-actions">
@@ -658,8 +856,52 @@ export default function HistoryReport() {
                   {dayError && <p className="history-day-error">{dayError}</p>}
                   <div className="history-day-detail-header">
                     <div>
-                      <strong>Grafik batang harian</strong>
-                      <p>Ringkasan per parameter dengan satuan dan patokan standar.</p>
+                      <strong>Grafik jam harian</strong>
+                      <p>Data 24 jam ditampilkan per jam supaya pola dan loss lebih mudah dibaca.</p>
+                    </div>
+                  </div>
+                  <div className="history-hourly-panel">
+                    <div className="history-hourly-toolbar">
+                      <div className="history-hourly-tabs" role="tablist" aria-label="Parameter per jam">
+                        {DAY_DETAIL_CONFIG.map((metric) => (
+                          <button
+                            key={metric.tag}
+                            type="button"
+                            className={`history-hourly-tab${
+                              selectedHourlyTag === metric.tag ? " history-hourly-tab--active" : ""
+                            }`}
+                            onClick={() => setSelectedHourlyTag(metric.tag)}
+                          >
+                            {metric.label}
+                          </button>
+                        ))}
+                      </div>
+                      <div className="history-hourly-meta">
+                        <span>{selectedHourlyMetric.standardLabel}</span>
+                        <strong>{selectedHourlyMetric.tag}</strong>
+                      </div>
+                    </div>
+                    <div className="history-hourly-chart">
+                      <ReactECharts
+                        option={hourlyChartOption}
+                        style={{ height: 360, width: "100%" }}
+                        notMerge
+                        lazyUpdate
+                      />
+                    </div>
+                    <div className="history-hourly-summary">
+                      <div className="history-hourly-summary-item">
+                        <span>Tag aktif</span>
+                        <strong>{selectedHourlyMetric.label}</strong>
+                      </div>
+                      <div className="history-hourly-summary-item">
+                        <span>Patokan</span>
+                        <strong>{selectedHourlyMetric.standardLabel}</strong>
+                      </div>
+                      <div className="history-hourly-summary-item">
+                        <span>Jam tampil</span>
+                        <strong>00:00 - 23:00</strong>
+                      </div>
                     </div>
                   </div>
                   <div className="history-day-bars">
