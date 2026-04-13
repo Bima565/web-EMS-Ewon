@@ -325,6 +325,19 @@
   background: linear-gradient(135deg, #4f46e5, #6366f1);
 }
 
+.history-progress-fill--loss {
+  background: linear-gradient(135deg, #ef4444, #f97316);
+}
+
+.history-week-loss {
+  font-size: 0.75rem;
+  color: rgba(226, 232, 240, 0.85);
+}
+
+.history-week-loss--bad {
+  color: rgba(252, 165, 165, 0.95);
+}
+
 .history-week-actions {
   justify-content: center;
 }

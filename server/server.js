@@ -34,8 +34,8 @@ const latestParamSnapshot = {
   values: [],
   updatedAt: null,
 }
-const hourlyLogState = {
-  lastPersistedHourKey: null,
+const slotLogState = {
+  lastPersistedSlotKey: null,
 }
 let isParamPolling = false
 let isSweepingOldLogs = false
@@ -309,7 +309,7 @@ const connectTo = (pool, scope, name) => {
 connectTo(db, "db-main", "ewon")
 connectTo(logsDb, "db-write", "ewon-logs")
 
-const getHourBucketKey = (date, timeZone) => {
+const getSlotBucketKey = (date, timeZone) => {
   const formatter = new Intl.DateTimeFormat("en-CA", {
     timeZone,
     year: "numeric",
@@ -327,11 +327,11 @@ const getHourBucketKey = (date, timeZone) => {
   return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:00`
 }
 
-const getLatestLoggedHourKey = async () => {
+const getLatestLoggedSlotKey = async () => {
   const [[{ latest }]] = await runLoggedQuery(
     logsDb,
     "db-write",
-    "select latest hourly log",
+    "select latest slot log",
     "SELECT MAX(created_at) AS latest FROM ewon_tag_logs WHERE tag_name IN (?)",
     [TRACKED_TAGS],
     {
@@ -340,7 +340,7 @@ const getLatestLoggedHourKey = async () => {
     },
   )
 
-  return latest ? getHourBucketKey(new Date(latest), REPORT_TIME_ZONE) : null
+  return latest ? getSlotBucketKey(new Date(latest), REPORT_TIME_ZONE) : null
 }
 
 const logParamValues = async (params) => {
@@ -351,12 +351,12 @@ const logParamValues = async (params) => {
 
   if (!filtered.length) return
 
-  const currentHourKey = getHourBucketKey(new Date(), REPORT_TIME_ZONE)
-  if (hourlyLogState.lastPersistedHourKey === currentHourKey) return
+  const currentSlotKey = getSlotBucketKey(new Date(), REPORT_TIME_ZONE)
+  if (slotLogState.lastPersistedSlotKey === currentSlotKey) return
 
-  const latestLoggedHourKey = await getLatestLoggedHourKey()
-  if (latestLoggedHourKey === currentHourKey) {
-    hourlyLogState.lastPersistedHourKey = currentHourKey
+  const latestLoggedSlotKey = await getLatestLoggedSlotKey()
+  if (latestLoggedSlotKey === currentSlotKey) {
+    slotLogState.lastPersistedSlotKey = currentSlotKey
     return
   }
 
@@ -368,13 +368,13 @@ const logParamValues = async (params) => {
     [filtered],
     {
       database: "ewon-logs",
-      hourBucket: currentHourKey,
+      slotBucket: currentSlotKey,
       rowCount: filtered.length,
       tags: filtered.map(([tagName]) => tagName),
     },
   )
 
-  hourlyLogState.lastPersistedHourKey = currentHourKey
+  slotLogState.lastPersistedSlotKey = currentSlotKey
 }
 
 const refreshParamSnapshot = async () => {
@@ -722,9 +722,10 @@ const normalizeDailyConsumption = (startValue, endValue) => {
   return Number(Math.max(0, endValue - startValue).toFixed(3))
 }
 
-const buildWeeklyResponse = (rows, anchorTimestamp) => {
+const buildWeeklyResponse = (statRows, coverageRows, anchorTimestamp) => {
   const anchorDate = new Date(anchorTimestamp)
   const anchorParts = getTimeZoneParts(anchorDate, REPORT_TIME_ZONE)
+  const anchorDateKey = formatPartsToDate(anchorParts)
   const anchorMidnight = getTimeZoneDayStartMs(
     anchorParts.year,
     anchorParts.month,
@@ -746,25 +747,16 @@ const buildWeeklyResponse = (rows, anchorTimestamp) => {
       displayParts: parts,
       displayReferenceTime: date.getTime(),
       stats: {},
+      slotCountMap: new Map(),
     })
   }
 
-  rows.forEach((row) => {
-    const tag = row.tag_name
-    if (!TRACKED_TAGS.includes(tag)) return
-    const createdAt = new Date(row.created_at)
-    const parts = getTimeZoneParts(createdAt, REPORT_TIME_ZONE)
-    const key = `${parts.year}-${String(parts.month).padStart(2, "0")}-${String(
-      parts.day,
-    ).padStart(2, "0")}`
-    const day = dayMap.get(key)
+  statRows.forEach((row) => {
+    const day = dayMap.get(row.day_key)
     if (!day) return
 
-    const timestamp = createdAt.getTime()
-    if (!day.displayReferenceTime || timestamp >= day.displayReferenceTime) {
-      day.displayReferenceTime = timestamp
-      day.displayParts = parts
-    }
+    const tag = row.tag_name
+    if (!TRACKED_TAGS.includes(tag)) return
 
     const tagStats = day.stats[tag] ?? {
       count: 0,
@@ -775,18 +767,30 @@ const buildWeeklyResponse = (rows, anchorTimestamp) => {
       lastTime: 0,
     }
 
-    const value = Number(row.value ?? 0)
-    tagStats.count += 1
-    tagStats.sum += value
-    tagStats.min = tagStats.min === null ? value : Math.min(tagStats.min, value)
-    tagStats.max = tagStats.max === null ? value : Math.max(tagStats.max, value)
-    if (tagStats.lastTime === 0 || createdAt.getTime() > tagStats.lastTime) {
-      tagStats.lastValue = value
-      tagStats.lastTime = createdAt.getTime()
-    }
+    tagStats.count = Number(row.sample_count ?? 0)
+    tagStats.sum = Number(row.sum_value ?? 0)
+    tagStats.min = row.min_value !== null ? Number(row.min_value) : null
+    tagStats.max = row.max_value !== null ? Number(row.max_value) : null
+    tagStats.lastValue = row.last_reading !== null ? Number(row.last_reading) : null
+    tagStats.lastTime = row.last_time ? new Date(row.last_time).getTime() : 0
 
     day.stats[tag] = tagStats
   })
+
+  coverageRows.forEach((row) => {
+    const day = dayMap.get(row.day_key)
+    if (!day) return
+
+    day.slotCountMap.set(Number(row.hour_key), Number(row.tag_count ?? 0))
+  })
+
+  const getExpectedSlotsForDateKey = (dateKey) => {
+    const totalSlotsPerDay = 24
+    if (dateKey !== anchorDateKey) return totalSlotsPerDay
+    const expected = Number(anchorParts.hour) + 1
+    if (!Number.isFinite(expected)) return totalSlotsPerDay
+    return Math.min(totalSlotsPerDay, Math.max(1, expected))
+  }
 
   const week = Array.from(dayMap.values()).map((day) => ({
     date: day.date,
@@ -810,6 +814,28 @@ const buildWeeklyResponse = (rows, anchorTimestamp) => {
       }
       return acc
     }, {}),
+    coverage: (() => {
+      const expectedHours = getExpectedSlotsForDateKey(day.date)
+      let observedHours = 0
+      day.slotCountMap.forEach((tagCount) => {
+        if (tagCount > 0) observedHours += 1
+      })
+
+      const completeHours = Math.min(expectedHours, observedHours)
+      const missingHours = Math.max(0, expectedHours - completeHours)
+      const progress = expectedHours
+        ? Math.round(Math.min(100, (completeHours / expectedHours) * 100))
+        : 0
+
+      return {
+        expectedHours,
+        loggedHours: Math.min(expectedHours, observedHours),
+        completeHours,
+        missingHours,
+        progress,
+        hasLoss: missingHours > 0,
+      }
+    })(),
   }))
 
   return { tags: TRACKED_TAGS, week }
@@ -818,20 +844,6 @@ const buildWeeklyResponse = (rows, anchorTimestamp) => {
 app.get("/api/logs/weekly", async (req, res) => {
   const now = new Date()
   try {
-    const [[{ latest }]] = await runLoggedQuery(
-      logsDb,
-      "db-write",
-      "select latest weekly anchor",
-      "SELECT MAX(created_at) AS latest FROM ewon_tag_logs WHERE tag_name IN (?)",
-      [TRACKED_TAGS],
-      {
-        route: "/api/logs/weekly",
-        database: "ewon-logs",
-        tagCount: TRACKED_TAGS.length,
-      },
-    )
-    const latestTimestamp = latest ? new Date(latest).getTime() : 0
-    const nowTimestamp = now.getTime()
     const todayParts = getTimeZoneParts(now, REPORT_TIME_ZONE)
     const todayMidnight = getTimeZoneDayStartMs(
       todayParts.year,
@@ -840,8 +852,7 @@ app.get("/api/logs/weekly", async (req, res) => {
       REPORT_TIME_ZONE,
     )
     const todayEnd = todayMidnight + DAY_MS - 1
-    const anchorCandidate = latestTimestamp || nowTimestamp
-    const anchorTimestamp = Math.min(anchorCandidate, todayEnd)
+    const anchorTimestamp = Math.min(now.getTime(), todayEnd)
     const anchorDate = new Date(anchorTimestamp)
     const anchorParts = getTimeZoneParts(anchorDate, REPORT_TIME_ZONE)
     const anchorMidnight = getTimeZoneDayStartMs(
@@ -852,20 +863,59 @@ app.get("/api/logs/weekly", async (req, res) => {
     )
     const listStart = new Date(anchorMidnight - (WEEK_DAYS - 1) * DAY_MS)
     const listEnd = new Date(anchorMidnight + DAY_MS)
-    const [rows] = await runLoggedQuery(
-      logsDb,
-      "db-write",
-      "select weekly logs",
-      "SELECT tag_name, value, created_at FROM ewon_tag_logs WHERE tag_name IN (?) AND created_at >= ? AND created_at < ? ORDER BY created_at ASC",
-      [TRACKED_TAGS, listStart, listEnd],
-      {
-        route: "/api/logs/weekly",
-        database: "ewon-logs",
-        from: listStart.toISOString(),
-        to: listEnd.toISOString(),
-      },
-    )
-    res.json(buildWeeklyResponse(rows, anchorTimestamp))
+
+    const [statRows, coverageRows] = await Promise.all([
+      runLoggedQuery(
+        logsDb,
+        "db-write",
+        "select weekly summary stats",
+        `
+          SELECT
+            DATE_FORMAT(DATE_ADD(created_at, INTERVAL 7 HOUR), '%Y-%m-%d') AS day_key,
+            tag_name,
+            COUNT(*) AS sample_count,
+            SUM(value) AS sum_value,
+            MIN(value) AS min_value,
+            MAX(value) AS max_value,
+            SUBSTRING_INDEX(GROUP_CONCAT(value ORDER BY created_at SEPARATOR ','), ',', -1) AS last_reading,
+            MAX(created_at) AS last_time
+          FROM ewon_tag_logs
+          WHERE tag_name IN (?) AND created_at >= ? AND created_at < ?
+          GROUP BY DATE_FORMAT(DATE_ADD(created_at, INTERVAL 7 HOUR), '%Y-%m-%d'), tag_name
+          ORDER BY day_key ASC, tag_name ASC
+        `,
+        [TRACKED_TAGS, listStart, listEnd],
+        {
+          route: "/api/logs/weekly",
+          database: "ewon-logs",
+          from: listStart.toISOString(),
+          to: listEnd.toISOString(),
+        },
+      ).then(([rows]) => rows),
+      runLoggedQuery(
+        logsDb,
+        "db-write",
+        "select weekly summary coverage",
+        `
+          SELECT
+            DATE_FORMAT(DATE_ADD(created_at, INTERVAL 7 HOUR), '%Y-%m-%d') AS day_key,
+            HOUR(DATE_ADD(created_at, INTERVAL 7 HOUR)) AS hour_key,
+            COUNT(DISTINCT tag_name) AS tag_count
+          FROM ewon_tag_logs
+          WHERE tag_name IN (?) AND created_at >= ? AND created_at < ?
+          GROUP BY DATE_FORMAT(DATE_ADD(created_at, INTERVAL 7 HOUR), '%Y-%m-%d'), HOUR(DATE_ADD(created_at, INTERVAL 7 HOUR))
+          ORDER BY day_key ASC, hour_key ASC
+        `,
+        [TRACKED_TAGS, listStart, listEnd],
+        {
+          route: "/api/logs/weekly",
+          database: "ewon-logs",
+          from: listStart.toISOString(),
+          to: listEnd.toISOString(),
+        },
+      ).then(([rows]) => rows),
+    ])
+    res.json(buildWeeklyResponse(statRows, coverageRows, anchorTimestamp))
   } catch (error) {
     res.status(500).json({ message: "Tidak dapat mengambil data mingguan" })
   }

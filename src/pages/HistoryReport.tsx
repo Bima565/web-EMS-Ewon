@@ -25,6 +25,14 @@ type WeeklyDay = {
     }
   >
   displayDate?: string
+  coverage?: {
+    expectedHours: number
+    loggedHours: number
+    completeHours: number
+    missingHours: number
+    progress: number
+    hasLoss: boolean
+  }
 }
 
 type WeeklyResponse = {
@@ -42,6 +50,8 @@ type WeeklyTableRow = {
   tagDetails: Array<{ tag: string; value: number | null }>
   average: number | null
   progress: number
+  progressText: string
+  lossLabel: string
 }
 
 type DayDetailMetricConfig = {
@@ -67,9 +77,10 @@ type DayDetailMetric = DayDetailMetricConfig & {
 const API_BASE = "http://localhost:3000"
 const WEEKLY_REFRESH_MS = 5 * 60 * 1000
 const DAILY_REFRESH_MS = 30 * 1000
+const WEEKLY_FETCH_TIMEOUT_MS = 12000
 
 const XLSX_HEADERS = ["Hari", "Tanggal", "Rata-rata", "Progress (%)", ...TRACKED_TAGS]
-const HISTORY_REPORT_CACHE_KEY = "web-ewon:history-report:v1"
+const HISTORY_REPORT_CACHE_KEY = "web-ewon:history-report:v2"
 
 const DAY_DETAIL_CONFIG: DayDetailMetricConfig[] = [
   {
@@ -256,8 +267,12 @@ export default function HistoryReport() {
     setLoadingWeek((prev) => prev || weekData.length === 0)
     setWeekError(null)
 
+    const controller = new AbortController()
+    const timeout = window.setTimeout(() => controller.abort(), WEEKLY_FETCH_TIMEOUT_MS)
+
     fetch(
       `${API_BASE}/api/logs/weekly`,
+      { signal: controller.signal },
     )
       .then(async (res) => {
         if (!res.ok) {
@@ -277,9 +292,14 @@ export default function HistoryReport() {
       })
       .catch((err) => {
         console.error(err)
-        setWeekError("Gagal memuat data mingguan")
+        setWeekError(
+          err instanceof DOMException && err.name === "AbortError"
+            ? "Memuat data mingguan terlalu lama"
+            : "Gagal memuat data mingguan",
+        )
       })
       .finally(() => {
+        window.clearTimeout(timeout)
         setLoadingWeek(false)
       })
   }, [weekData.length])
@@ -289,19 +309,6 @@ export default function HistoryReport() {
     const timer = setInterval(fetchWeeklyData, WEEKLY_REFRESH_MS)
     return () => clearInterval(timer)
   }, [fetchWeeklyData])
-
-  const weeklyMaxValue = useMemo(() => {
-    const values: number[] = []
-    weekData.forEach((day) => {
-      TRACKED_TAGS.forEach((tag) => {
-        const val = day.stats[tag]?.last
-        if (typeof val === "number" && Number.isFinite(val)) {
-          values.push(val)
-        }
-      })
-    })
-    return values.length ? Math.max(...values) : 1
-  }, [weekData])
 
   const weeklyTableRows = useMemo<WeeklyTableRow[]>(() => {
     return weekData.map((day) => {
@@ -315,13 +322,19 @@ export default function HistoryReport() {
       const average = numericValues.length
         ? numericValues.reduce((acc, value) => acc + value, 0) / numericValues.length
         : null
-      const score = average ?? 0
-      const progress = weeklyMaxValue
-        ? Math.round(Math.min(100, (score / weeklyMaxValue) * 100))
-        : 0
-      return { day, tagDetails, average, progress }
+      const progress =
+        typeof day.coverage?.progress === "number" ? day.coverage.progress : 0
+      const progressText = day.coverage
+        ? `${day.coverage.completeHours}/${day.coverage.expectedHours}`
+        : `0/24`
+      const lossLabel = day.coverage
+        ? day.coverage.hasLoss
+          ? `Loss ${day.coverage.missingHours} jam`
+          : "Lengkap"
+        : "Memeriksa data"
+      return { day, tagDetails, average, progress, progressText, lossLabel }
     })
-  }, [weekData, weeklyMaxValue])
+  }, [weekData])
 
   const weeklyExportRows = useMemo(() => {
     return weeklyTableRows.map((row) => {
@@ -502,7 +515,7 @@ export default function HistoryReport() {
                     <p className="history-week-table-meta">Summary mingguan</p>
                     <h2 className="history-week-table-title">Rekap seminggu</h2>
                     <p className="history-week-table-note">
-                      Setiap baris menampilkan nilai terakhir per tag dengan progres ke atas.
+                      Progress menunjukkan kelengkapan data per 15 menit (00:00-24:00) untuk tiap hari.
                     </p>
                   </div>
                   <div className="history-week-table-actions">
@@ -528,7 +541,7 @@ export default function HistoryReport() {
                       </tr>
                     </thead>
                     <tbody>
-                      {weeklyTableRows.map(({ day, tagDetails, average, progress }) => (
+                      {weeklyTableRows.map(({ day, tagDetails, average, progress, progressText, lossLabel }) => (
                         <tr className="history-week-table-row" key={day.date}>
                           <td>
                             <div className="history-week-cell history-week-day">
@@ -567,11 +580,21 @@ export default function HistoryReport() {
                             <div className="history-week-cell history-week-progress">
                               <div className="history-progress-bar">
                                 <span
-                                  className="history-progress-fill"
+                                  className={`history-progress-fill${
+                                    day.coverage?.hasLoss ? " history-progress-fill--loss" : ""
+                                  }`}
                                   style={{ width: `${progress}%` }}
                                 />
                               </div>
-                              <strong>{progress}%</strong>
+                              <strong>{progressText}</strong>
+                              <small>{progress}%</small>
+                              <small
+                                className={`history-week-loss${
+                                  day.coverage?.hasLoss ? " history-week-loss--bad" : ""
+                                }`}
+                              >
+                                {`Per jam: ${lossLabel}`}
+                              </small>
                             </div>
                           </td>
                           <td>
