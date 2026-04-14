@@ -762,6 +762,7 @@ const buildWeeklyResponse = (statRows, coverageRows, anchorTimestamp) => {
       sum: 0,
       min: null,
       max: null,
+      firstValue: null,
       lastValue: null,
       lastTime: 0,
     }
@@ -770,6 +771,7 @@ const buildWeeklyResponse = (statRows, coverageRows, anchorTimestamp) => {
     tagStats.sum = Number(row.sum_value ?? 0)
     tagStats.min = row.min_value !== null ? Number(row.min_value) : null
     tagStats.max = row.max_value !== null ? Number(row.max_value) : null
+    tagStats.firstValue = row.first_reading !== null ? Number(row.first_reading) : null
     tagStats.lastValue = row.last_reading !== null ? Number(row.last_reading) : null
     tagStats.lastTime = row.last_time ? new Date(row.last_time).getTime() : 0
 
@@ -813,6 +815,15 @@ const buildWeeklyResponse = (statRows, coverageRows, anchorTimestamp) => {
       }
       return acc
     }, {}),
+    consumptionKwh: (() => {
+      const entry = day.stats.pm139KWH
+      return normalizeDailyConsumption(entry?.firstValue ?? null, entry?.lastValue ?? null)
+    })(),
+    costEstimateIdr: (() => {
+      const entry = day.stats.pm139KWH
+      const consumptionKwh = normalizeDailyConsumption(entry?.firstValue ?? null, entry?.lastValue ?? null)
+      return consumptionKwh == null ? null : Number((consumptionKwh * KWH_TARIFF).toFixed(2))
+    })(),
     coverage: (() => {
       const expectedHours = getExpectedSlotsForDateKey(day.date)
       let observedHours = 0
@@ -876,6 +887,7 @@ app.get("/api/logs/weekly", async (req, res) => {
             SUM(value) AS sum_value,
             MIN(value) AS min_value,
             MAX(value) AS max_value,
+            SUBSTRING_INDEX(GROUP_CONCAT(value ORDER BY created_at SEPARATOR ','), ',', 1) AS first_reading,
             SUBSTRING_INDEX(GROUP_CONCAT(value ORDER BY created_at SEPARATOR ','), ',', -1) AS last_reading,
             MAX(created_at) AS last_time
           FROM ewon_tag_logs

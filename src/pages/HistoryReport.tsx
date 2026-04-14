@@ -16,6 +16,8 @@ const TRACKED_TAGS = [
 type WeeklyDay = {
   date: string
   label: string
+  consumptionKwh?: number | null
+  costEstimateIdr?: number | null
   stats: Record<
     string,
     {
@@ -49,7 +51,7 @@ type DailyResponse = {
 type WeeklyTableRow = {
   day: WeeklyDay
   tagDetails: Array<{ tag: string; value: number | null }>
-  average: number | null
+  costEstimateIdr: number | null
   progress: number
   progressText: string
   lossLabel: string
@@ -87,7 +89,7 @@ const DAILY_REFRESH_MS = 30 * 1000
 const WEEKLY_FETCH_TIMEOUT_MS = 12000
 const REPORT_TIME_ZONE = "Asia/Jakarta"
 
-const XLSX_HEADERS = ["Hari", "Tanggal", "Rata-rata", "Progress (%)", ...TRACKED_TAGS]
+const XLSX_HEADERS = ["Hari", "Tanggal", "Cost Harian (Rp)", "Progress (%)", ...TRACKED_TAGS]
 const HISTORY_REPORT_CACHE_KEY = "web-ewon:history-report:v3"
 
 const DAY_DETAIL_CONFIG: DayDetailMetricConfig[] = [
@@ -176,6 +178,11 @@ const normalizeWeeklyData = (entries: WeeklyDay[]) => {
 const formatWeeklyValue = (value: number | null) =>
   value != null
     ? value.toLocaleString("id-ID", { maximumFractionDigits: 4 })
+    : "-"
+
+const formatCurrencyValue = (value: number | null) =>
+  value != null
+    ? `Rp${value.toLocaleString("id-ID", { maximumFractionDigits: 0 })}`
     : "-"
 
 const formatMetricValue = (
@@ -398,12 +405,6 @@ export default function HistoryReport() {
         tag,
         value: day.stats[tag]?.last ?? null,
       }))
-      const numericValues = tagDetails
-        .map((entry) => entry.value)
-        .filter((value): value is number => Number.isFinite(value))
-      const average = numericValues.length
-        ? numericValues.reduce((acc, value) => acc + value, 0) / numericValues.length
-        : null
       const progress =
         typeof day.coverage?.progress === "number" ? day.coverage.progress : 0
       const progressText = day.coverage
@@ -414,7 +415,14 @@ export default function HistoryReport() {
           ? `Loss ${day.coverage.missingHours} jam`
           : "Lengkap"
         : "Memeriksa data"
-      return { day, tagDetails, average, progress, progressText, lossLabel }
+      return {
+        day,
+        tagDetails,
+        costEstimateIdr: day.costEstimateIdr ?? null,
+        progress,
+        progressText,
+        lossLabel,
+      }
     })
   }, [weekData])
 
@@ -423,7 +431,7 @@ export default function HistoryReport() {
       const record: Record<string, string | number | null> = {
         Hari: row.day.label,
         Tanggal: row.day.displayDate ?? row.day.date,
-        "Rata-rata": row.average ?? null,
+        "Cost Harian (Rp)": row.costEstimateIdr ?? null,
         "Progress (%)": row.progress,
       }
       row.tagDetails.forEach((detail) => {
@@ -763,14 +771,14 @@ export default function HistoryReport() {
                     <thead>
                       <tr>
                         <th>Hari</th>
-                        <th>Rata-rata</th>
+                        <th>Cost Harian</th>
                         <th>Tag aktif</th>
                         <th>Progress</th>
                         <th aria-label="Aksi"></th>
                       </tr>
                     </thead>
                     <tbody>
-                      {weeklyTableRows.map(({ day, tagDetails, average, progress, progressText, lossLabel }) => {
+                      {weeklyTableRows.map(({ day, tagDetails, costEstimateIdr, progress, progressText, lossLabel }) => {
                         const isToday = day.date === currentDateKey
 
                         return (
@@ -791,8 +799,8 @@ export default function HistoryReport() {
                           </td>
                           <td>
                             <div className="history-week-cell history-week-average">
-                              <strong>{formatWeeklyValue(average)}</strong>
-                              <small>avg nilai</small>
+                              <strong>{formatCurrencyValue(costEstimateIdr)}</strong>
+                              <small>estimasi biaya kWh</small>
                             </div>
                           </td>
                           <td>
