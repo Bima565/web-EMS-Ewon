@@ -349,7 +349,7 @@
 
 .history-week-day-badge {
   display: inline-flex;
-  align-self: flex-start;
+  align-self: center;
   margin-top: 0.15rem;
   padding: 0.2rem 0.45rem;
   border-radius: 999px;

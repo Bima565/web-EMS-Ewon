@@ -175,11 +175,6 @@ const normalizeWeeklyData = (entries: WeeklyDay[]) => {
     .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
 }
 
-const formatWeeklyValue = (value: number | null) =>
-  value != null
-    ? value.toLocaleString("id-ID", { maximumFractionDigits: 4 })
-    : "-"
-
 const formatCurrencyValue = (value: number | null) =>
   value != null
     ? `Rp${value.toLocaleString("id-ID", { maximumFractionDigits: 0 })}`
@@ -772,13 +767,12 @@ export default function HistoryReport() {
                       <tr>
                         <th>Hari</th>
                         <th>Cost Harian</th>
-                        <th>Tag aktif</th>
                         <th>Progress</th>
                         <th aria-label="Aksi"></th>
                       </tr>
                     </thead>
                     <tbody>
-                      {weeklyTableRows.map(({ day, tagDetails, costEstimateIdr, progress, progressText, lossLabel }) => {
+                      {weeklyTableRows.map(({ day, costEstimateIdr, progress, progressText, lossLabel }) => {
                         const isToday = day.date === currentDateKey
 
                         return (
@@ -801,27 +795,6 @@ export default function HistoryReport() {
                             <div className="history-week-cell history-week-average">
                               <strong>{formatCurrencyValue(costEstimateIdr)}</strong>
                               <small>estimasi biaya kWh</small>
-                            </div>
-                          </td>
-                          <td>
-                            <div className="history-week-cell history-week-tags">
-                              <div className="history-week-tags-columns">
-                                {[
-                                  tagDetails.slice(0, Math.ceil(tagDetails.length / 2)),
-                                  tagDetails.slice(Math.ceil(tagDetails.length / 2)),
-                                ].map((column, index) => (
-                                  <div className="history-week-tag-column" key={`${day.date}-col-${index}`}>
-                                    {column.map((entry) => (
-                                      <div className="history-week-tag-card" key={`${day.date}-${entry.tag}`}>
-                                        <span className="history-week-tag-card-label">{entry.tag}</span>
-                                        <strong className="history-week-tag-card-value">
-                                          {formatWeeklyValue(entry.value)}
-                                        </strong>
-                                      </div>
-                                    ))}
-                                  </div>
-                                ))}
-                              </div>
                             </div>
                           </td>
                           <td>
