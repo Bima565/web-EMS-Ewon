@@ -88,7 +88,7 @@ const WEEKLY_FETCH_TIMEOUT_MS = 12000
 const REPORT_TIME_ZONE = "Asia/Jakarta"
 
 const XLSX_HEADERS = ["Hari", "Tanggal", "Rata-rata", "Progress (%)", ...TRACKED_TAGS]
-const HISTORY_REPORT_CACHE_KEY = "web-ewon:history-report:v2"
+const HISTORY_REPORT_CACHE_KEY = "web-ewon:history-report:v3"
 
 const DAY_DETAIL_CONFIG: DayDetailMetricConfig[] = [
   {
@@ -198,6 +198,27 @@ const getHourInTimeZone = (timestamp: string, timeZone: string) => {
   return Number(hourPart)
 }
 
+const getDateKeyInTimeZone = (date: Date, timeZone: string) => {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  })
+    .formatToParts(date)
+    .reduce(
+      (acc, part) => {
+        if (part.type === "year" || part.type === "month" || part.type === "day") {
+          acc[part.type] = part.value
+        }
+        return acc
+      },
+      { year: "", month: "", day: "" } as Record<string, string>,
+    )
+
+  return `${parts.year}-${parts.month}-${parts.day}`
+}
+
 const buildHourlySeries = (
   entries: Array<{ timestamp: string; value: number }>,
   summaryMode: "avg" | "last",
@@ -233,36 +254,40 @@ const buildHourlySeries = (
 type HistoryReportCache = {
   weekData: WeeklyDay[]
   selectedDay: string
-  dailyCache: Record<string, DailyResponse>
 }
 
 const readHistoryReportCache = (): HistoryReportCache => {
   if (typeof window === "undefined") {
-    return { weekData: [], selectedDay: "", dailyCache: {} }
+    return { weekData: [], selectedDay: "" }
   }
 
   try {
     const raw = window.sessionStorage.getItem(HISTORY_REPORT_CACHE_KEY)
     if (!raw) {
-      return { weekData: [], selectedDay: "", dailyCache: {} }
+      return { weekData: [], selectedDay: "" }
     }
 
     const parsed = JSON.parse(raw) as Partial<HistoryReportCache>
     return {
       weekData: normalizeWeeklyData(parsed.weekData ?? []),
       selectedDay: parsed.selectedDay ?? "",
-      dailyCache: parsed.dailyCache ?? {},
     }
   } catch (error) {
     console.error("failed to read history report cache", error)
-    return { weekData: [], selectedDay: "", dailyCache: {} }
+    return { weekData: [], selectedDay: "" }
   }
 }
 
 const persistHistoryReportCache = (cache: HistoryReportCache) => {
   if (typeof window === "undefined") return
   try {
-    window.sessionStorage.setItem(HISTORY_REPORT_CACHE_KEY, JSON.stringify(cache))
+    window.sessionStorage.setItem(
+      HISTORY_REPORT_CACHE_KEY,
+      JSON.stringify({
+        weekData: cache.weekData,
+        selectedDay: cache.selectedDay,
+      }),
+    )
   } catch (error) {
     console.error("failed to persist history report cache", error)
   }
@@ -275,7 +300,7 @@ export default function HistoryReport() {
   const [weekError, setWeekError] = useState<string | null>(null)
   const [selectedDay, setSelectedDay] = useState(cachedReport.selectedDay)
   const [selectedHourlyTag, setSelectedHourlyTag] = useState("pm139KWH")
-  const [dailyCache, setDailyCache] = useState<Record<string, DailyResponse>>(cachedReport.dailyCache)
+  const [dailyCache, setDailyCache] = useState<Record<string, DailyResponse>>({})
   const [loadingDay, setLoadingDay] = useState(false)
   const [dayError, setDayError] = useState<string | null>(null)
   const dailyCacheRef = useRef(dailyCache)
@@ -311,9 +336,8 @@ export default function HistoryReport() {
     persistHistoryReportCache({
       weekData,
       selectedDay,
-      dailyCache,
     })
-  }, [dailyCache, selectedDay, weekData])
+  }, [selectedDay, weekData])
 
   useEffect(() => {
     if (!TRACKED_TAGS.includes(selectedHourlyTag)) {
@@ -476,6 +500,11 @@ export default function HistoryReport() {
     () => weekData.find((day) => day.date === selectedDay) ?? null,
     [selectedDay, weekData],
   )
+  const currentDateKey = useMemo(
+    () => getDateKeyInTimeZone(new Date(), REPORT_TIME_ZONE),
+    [],
+  )
+  const isSelectedDayToday = selectedDay === currentDateKey
 
   const selectedHourlyMetric = useMemo(
     () => DAY_DETAIL_CONFIG.find((metric) => metric.tag === selectedHourlyTag) ?? DAY_DETAIL_CONFIG[0],
@@ -650,6 +679,8 @@ export default function HistoryReport() {
     })
   }, [dailyDetail, selectedWeekDay])
 
+  const shouldShowTodayLoader = isSelectedDayToday && loadingDay
+
 
   return (
     <main className="history-page">
@@ -739,12 +770,23 @@ export default function HistoryReport() {
                       </tr>
                     </thead>
                     <tbody>
-                      {weeklyTableRows.map(({ day, tagDetails, average, progress, progressText, lossLabel }) => (
-                        <tr className="history-week-table-row" key={day.date}>
+                      {weeklyTableRows.map(({ day, tagDetails, average, progress, progressText, lossLabel }) => {
+                        const isToday = day.date === currentDateKey
+
+                        return (
+                        <tr
+                          className={`history-week-table-row${
+                            isToday ? " history-week-table-row--today" : ""
+                          }`}
+                          key={day.date}
+                        >
                           <td>
                             <div className="history-week-cell history-week-day">
                               <strong>{day.label}</strong>
                               <span>{day.displayDate ?? day.date}</span>
+                              {isToday && (
+                                <small className="history-week-day-badge">Hari ini</small>
+                              )}
                             </div>
                           </td>
                           <td>
@@ -775,17 +817,32 @@ export default function HistoryReport() {
                             </div>
                           </td>
                           <td>
-                            <div className="history-week-cell history-week-progress">
+                            <div
+                              className={`history-week-cell history-week-progress${
+                                isToday ? " history-week-progress--today" : ""
+                              }`}
+                            >
                               <div className="history-progress-bar">
                                 <span
                                   className={`history-progress-fill${
                                     day.coverage?.hasLoss ? " history-progress-fill--loss" : ""
+                                  }${isToday ? " history-progress-fill--today" : ""
                                   }`}
                                   style={{ width: `${progress}%` }}
                                 />
                               </div>
                               <strong>{progressText}</strong>
                               <small>{progress}%</small>
+                              {isToday && (
+                                <div className="history-week-progress-status">
+                                  <div className="loader" aria-hidden="true">
+                                    <div className="inner one" />
+                                    <div className="inner two" />
+                                    <div className="inner three" />
+                                  </div>
+                                  <span>Berjalan</span>
+                                </div>
+                              )}
                               <small
                                 className={`history-week-loss${
                                   day.coverage?.hasLoss ? " history-week-loss--bad" : ""
@@ -803,7 +860,8 @@ export default function HistoryReport() {
                             </div>
                           </td>
                         </tr>
-                      ))}
+                        )
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -857,7 +915,10 @@ export default function HistoryReport() {
                   <div className="history-day-detail-header">
                     <div>
                       <strong>Grafik jam harian</strong>
-                      <p>Data 24 jam ditampilkan per jam supaya pola dan loss lebih mudah dibaca.</p>
+                      <p>
+                        Data 24 jam ditampilkan per jam supaya pola dan loss lebih mudah dibaca.
+                        {isSelectedDayToday ? " Hari ini masih berjalan, jadi data bisa terus bertambah." : ""}
+                      </p>
                     </div>
                   </div>
                   <div className="history-hourly-panel">
@@ -881,13 +942,32 @@ export default function HistoryReport() {
                         <strong>{selectedHourlyMetric.tag}</strong>
                       </div>
                     </div>
-                    <div className="history-hourly-chart">
-                      <ReactECharts
-                        option={hourlyChartOption}
-                        style={{ height: 360, width: "100%" }}
-                        notMerge
-                        lazyUpdate
-                      />
+                    <div className="history-hourly-chart-row">
+                      <div className="history-hourly-chart">
+                        <ReactECharts
+                          option={hourlyChartOption}
+                          style={{ height: 360, width: "100%" }}
+                          notMerge
+                          lazyUpdate
+                        />
+                      </div>
+                      {shouldShowTodayLoader && (
+                        <aside className="history-hourly-loading" aria-live="polite">
+                          <div className="loader" aria-hidden="true">
+                            <div className="inner one" />
+                            <div className="inner two" />
+                            <div className="inner three" />
+                          </div>
+                          <strong>
+                            {dailyDetail ? "Memperbarui data hari ini" : "Hari ini sedang mengambil data"}
+                          </strong>
+                          <span>
+                            {dailyDetail
+                              ? "Data lama masih tampil sambil menunggu sinkron terbaru."
+                              : "Menunggu slot pertama masuk ke chart."}
+                          </span>
+                        </aside>
+                      )}
                     </div>
                     <div className="history-hourly-summary">
                       <div className="history-hourly-summary-item">

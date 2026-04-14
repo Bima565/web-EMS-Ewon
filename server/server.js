@@ -725,7 +725,6 @@ const normalizeDailyConsumption = (startValue, endValue) => {
 const buildWeeklyResponse = (statRows, coverageRows, anchorTimestamp) => {
   const anchorDate = new Date(anchorTimestamp)
   const anchorParts = getTimeZoneParts(anchorDate, REPORT_TIME_ZONE)
-  const anchorDateKey = formatPartsToDate(anchorParts)
   const anchorMidnight = getTimeZoneDayStartMs(
     anchorParts.year,
     anchorParts.month,
@@ -785,11 +784,11 @@ const buildWeeklyResponse = (statRows, coverageRows, anchorTimestamp) => {
   })
 
   const getExpectedSlotsForDateKey = (dateKey) => {
+    // Coverage mingguan dihitung terhadap 24 jam penuh untuk setiap hari.
+    // Hari yang sedang berjalan tetap harus terlihat sebagai hari yang belum lengkap,
+    // bukan "100%" hanya karena jam yang sudah lewat baru sebagian.
     const totalSlotsPerDay = 24
-    if (dateKey !== anchorDateKey) return totalSlotsPerDay
-    const expected = Number(anchorParts.hour) + 1
-    if (!Number.isFinite(expected)) return totalSlotsPerDay
-    return Math.min(totalSlotsPerDay, Math.max(1, expected))
+    return totalSlotsPerDay
   }
 
   const week = Array.from(dayMap.values()).map((day) => ({
@@ -871,7 +870,7 @@ app.get("/api/logs/weekly", async (req, res) => {
         "select weekly summary stats",
         `
           SELECT
-            DATE_FORMAT(DATE_ADD(created_at, INTERVAL 7 HOUR), '%Y-%m-%d') AS day_key,
+            DATE_FORMAT(created_at, '%Y-%m-%d') AS day_key,
             tag_name,
             COUNT(*) AS sample_count,
             SUM(value) AS sum_value,
@@ -881,7 +880,7 @@ app.get("/api/logs/weekly", async (req, res) => {
             MAX(created_at) AS last_time
           FROM ewon_tag_logs
           WHERE tag_name IN (?) AND created_at >= ? AND created_at < ?
-          GROUP BY DATE_FORMAT(DATE_ADD(created_at, INTERVAL 7 HOUR), '%Y-%m-%d'), tag_name
+          GROUP BY DATE_FORMAT(created_at, '%Y-%m-%d'), tag_name
           ORDER BY day_key ASC, tag_name ASC
         `,
         [TRACKED_TAGS, listStart, listEnd],
@@ -898,12 +897,12 @@ app.get("/api/logs/weekly", async (req, res) => {
         "select weekly summary coverage",
         `
           SELECT
-            DATE_FORMAT(DATE_ADD(created_at, INTERVAL 7 HOUR), '%Y-%m-%d') AS day_key,
-            HOUR(DATE_ADD(created_at, INTERVAL 7 HOUR)) AS hour_key,
+            DATE_FORMAT(created_at, '%Y-%m-%d') AS day_key,
+            HOUR(created_at) AS hour_key,
             COUNT(DISTINCT tag_name) AS tag_count
           FROM ewon_tag_logs
           WHERE tag_name IN (?) AND created_at >= ? AND created_at < ?
-          GROUP BY DATE_FORMAT(DATE_ADD(created_at, INTERVAL 7 HOUR), '%Y-%m-%d'), HOUR(DATE_ADD(created_at, INTERVAL 7 HOUR))
+          GROUP BY DATE_FORMAT(created_at, '%Y-%m-%d'), HOUR(created_at)
           ORDER BY day_key ASC, hour_key ASC
         `,
         [TRACKED_TAGS, listStart, listEnd],

@@ -311,6 +311,10 @@
   gap: 0.45rem;
 }
 
+.history-week-table-row--today td:nth-child(4) .history-progress-bar {
+  box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.15), 0 0 20px rgba(34, 197, 94, 0.12);
+}
+
 .history-progress-bar {
   width: 100%;
   height: 6px;
@@ -325,8 +329,67 @@
   background: linear-gradient(135deg, #4f46e5, #6366f1);
 }
 
+.history-progress-fill--today {
+  background: linear-gradient(135deg, #22c55e, #86efac);
+  box-shadow: 0 0 18px rgba(34, 197, 94, 0.55);
+}
+
 .history-progress-fill--loss {
   background: linear-gradient(135deg, #ef4444, #f97316);
+}
+
+.history-week-table-row--today .history-progress-fill--today {
+  background: linear-gradient(135deg, #22c55e, #86efac);
+  box-shadow: 0 0 18px rgba(34, 197, 94, 0.55);
+}
+
+.history-week-progress--today {
+  position: relative;
+}
+
+.history-week-day-badge {
+  display: inline-flex;
+  align-self: flex-start;
+  margin-top: 0.15rem;
+  padding: 0.2rem 0.45rem;
+  border-radius: 999px;
+  background: rgba(34, 197, 94, 0.14);
+  color: #86efac;
+  font-size: 0.68rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.history-week-progress-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin-top: 0.15rem;
+  color: #86efac;
+  font-size: 0.7rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.history-week-progress-status .loader {
+  position: relative;
+  top: auto;
+  left: auto;
+  width: 24px;
+  height: 24px;
+  perspective: 800px;
+}
+
+.history-week-progress-status .inner.one {
+  border-bottom-width: 2px;
+}
+
+.history-week-progress-status .inner.two {
+  border-right-width: 2px;
+}
+
+.history-week-progress-status .inner.three {
+  border-top-width: 2px;
 }
 
 .history-week-loss {
@@ -586,6 +649,106 @@
   min-height: 360px;
 }
 
+.history-hourly-chart-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 160px;
+  gap: 0.9rem;
+  align-items: stretch;
+}
+
+.history-hourly-loading {
+  position: relative;
+  min-height: 360px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.8rem;
+  padding: 1rem;
+  border-radius: 16px;
+  background: radial-gradient(circle at top, rgba(59, 130, 246, 0.18), rgba(2, 6, 23, 0.68));
+  border: 1px solid rgba(96, 165, 250, 0.2);
+  color: #f8fafc;
+  text-align: center;
+  overflow: hidden;
+}
+
+.history-hourly-loading strong {
+  font-size: 0.9rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.history-hourly-loading span {
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: rgba(226, 232, 240, 0.72);
+}
+
+.loader {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  perspective: 800px;
+}
+
+.inner {
+  position: absolute;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+}
+
+.inner.one {
+  left: 0%;
+  top: 0%;
+  animation: rotate-one 1s linear infinite;
+  border-bottom: 3px solid #efeffa;
+}
+
+.inner.two {
+  right: 0%;
+  top: 0%;
+  animation: rotate-two 1s linear infinite;
+  border-right: 3px solid #efeffa;
+}
+
+.inner.three {
+  right: 0%;
+  bottom: 0%;
+  animation: rotate-three 1s linear infinite;
+  border-top: 3px solid #efeffa;
+}
+
+@keyframes rotate-one {
+  0% {
+    transform: rotateX(35deg) rotateY(-45deg) rotateZ(0deg);
+  }
+  100% {
+    transform: rotateX(35deg) rotateY(-45deg) rotateZ(360deg);
+  }
+}
+
+@keyframes rotate-two {
+  0% {
+    transform: rotateX(50deg) rotateY(10deg) rotateZ(0deg);
+  }
+  100% {
+    transform: rotateX(50deg) rotateY(10deg) rotateZ(360deg);
+  }
+}
+
+@keyframes rotate-three {
+  0% {
+    transform: rotateX(35deg) rotateY(55deg) rotateZ(0deg);
+  }
+  100% {
+    transform: rotateX(35deg) rotateY(55deg) rotateZ(360deg);
+  }
+}
+
 .history-hourly-summary {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -707,7 +870,16 @@
     align-items: flex-start;
     text-align: left;
   }
+  .history-hourly-chart-row {
+    grid-template-columns: 1fr;
+  }
+  .history-hourly-loading {
+    min-height: 180px;
+  }
   .history-hourly-summary {
     grid-template-columns: 1fr;
+  }
+  .history-week-progress-status {
+    justify-content: flex-start;
   }
 }
