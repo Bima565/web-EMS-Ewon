@@ -89,7 +89,6 @@ const DAILY_REFRESH_MS = 30 * 1000
 const WEEKLY_FETCH_TIMEOUT_MS = 12000
 const REPORT_TIME_ZONE = "Asia/Jakarta"
 
-const XLSX_HEADERS = ["Hari", "Tanggal", "Cost Harian (Rp)", "Progress (%)", ...TRACKED_TAGS]
 const HISTORY_REPORT_CACHE_KEY = "web-ewon:history-report:v3"
 
 const DAY_DETAIL_CONFIG: DayDetailMetricConfig[] = [
@@ -153,6 +152,19 @@ const DAY_DETAIL_CONFIG: DayDetailMetricConfig[] = [
     summaryMode: "avg",
     decimals: 3,
   },
+]
+
+const EXPORT_WEEKLY_HEADERS = [
+  "Hari",
+  "Tanggal",
+  "Cost Harian (Rp)",
+  "Progress (%)",
+  ...DAY_DETAIL_CONFIG.map((metric) => `${metric.label} (${metric.unit})`),
+]
+
+const EXPORT_HOURLY_HEADERS = [
+  "Jam",
+  ...DAY_DETAIL_CONFIG.map((metric) => `${metric.label} (${metric.unit})`),
 ]
 
 const normalizeWeeklyData = (entries: WeeklyDay[]) => {
@@ -251,6 +263,41 @@ const buildHourlySeries = (
       value,
     }
   }) as HourlyMetricPoint[]
+}
+
+const buildHourlyExportRows = (day: WeeklyDay, dailyDetail: DailyResponse | null) => {
+  const metricSeries = DAY_DETAIL_CONFIG.map((metric) => {
+    const rawEntries = (dailyDetail?.tags[metric.tag] ?? []).filter((entry) =>
+      Number.isFinite(entry.value),
+    )
+    return {
+      metric,
+      series: buildHourlySeries(rawEntries, metric.summaryMode),
+    }
+  })
+
+  return Array.from({ length: 24 }, (_, hour) => {
+    const record: Record<string, string | number | null> = {
+      Hari: day.label,
+      Tanggal: day.displayDate ?? day.date,
+      Jam: `${String(hour).padStart(2, "0")}:00`,
+    }
+
+    metricSeries.forEach(({ metric, series }) => {
+      const columnName = `${metric.label} (${metric.unit})`
+      record[columnName] = series[hour]?.value ?? null
+    })
+
+    return record
+  })
+}
+
+const fetchDailyReport = async (date: string): Promise<DailyResponse> => {
+  const res = await fetch(`${API_BASE}/api/logs/day/${date}`)
+  if (!res.ok) {
+    throw new Error("tidak bisa memuat detail harian")
+  }
+  return (await res.json()) as DailyResponse
 }
 
 type HistoryReportCache = {
@@ -426,36 +473,17 @@ export default function HistoryReport() {
       const record: Record<string, string | number | null> = {
         Hari: row.day.label,
         Tanggal: row.day.displayDate ?? row.day.date,
-        "Cost Harian (Rp)": row.costEstimateIdr ?? null,
+        "Cost Harian (Rp)": formatCurrencyValue(row.costEstimateIdr),
         "Progress (%)": row.progress,
       }
       row.tagDetails.forEach((detail) => {
-        record[detail.tag] = detail.value ?? null
+        const metric = DAY_DETAIL_CONFIG.find((item) => item.tag === detail.tag)
+        const columnName = metric ? `${metric.label} (${metric.unit})` : detail.tag
+        record[columnName] = detail.value ?? null
       })
       return record
     })
   }, [weeklyTableRows])
-
-  const exportWeeklyXLS = useCallback(() => {
-    if (!weeklyExportRows.length || typeof document === "undefined") {
-      return
-    }
-    const workbook = XLSX.utils.book_new()
-    const worksheet = XLSX.utils.json_to_sheet(weeklyExportRows, {
-      header: XLSX_HEADERS,
-    })
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Rekap Mingguan")
-    const rawData = XLSX.write(workbook, { bookType: "xlsx", type: "array" })
-    const blob = new Blob([rawData], {
-      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    })
-    const url = URL.createObjectURL(blob)
-    const anchor = document.createElement("a")
-    anchor.href = url
-    anchor.download = `rekap-mingguan-${new Date().toISOString().slice(0, 10)}.xlsx`
-    anchor.click()
-    URL.revokeObjectURL(url)
-  }, [weeklyExportRows])
 
   const fetchDayDetail = useCallback((date: string, force = false) => {
     if (!force && dailyCacheRef.current[date]) {
@@ -683,6 +711,45 @@ export default function HistoryReport() {
   }, [dailyDetail, selectedWeekDay])
 
   const shouldShowTodayLoader = isSelectedDayToday && loadingDay
+
+  const exportWeeklyXLS = useCallback(async () => {
+    if (!weeklyExportRows.length || typeof document === "undefined") {
+      return
+    }
+    const workbook = XLSX.utils.book_new()
+    const worksheet = XLSX.utils.json_to_sheet(weeklyExportRows, {
+      header: EXPORT_WEEKLY_HEADERS,
+    })
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Rekap Mingguan")
+
+    const hourlyRows = (
+      await Promise.all(
+        weekData.map(async (day) => {
+          const dailyDetail =
+            dailyCacheRef.current[day.date] ?? (await fetchDailyReport(day.date).catch(() => null))
+          return buildHourlyExportRows(day, dailyDetail)
+        }),
+      )
+    ).flat()
+
+    if (hourlyRows.length) {
+      const hourlyWorksheet = XLSX.utils.json_to_sheet(hourlyRows, {
+        header: EXPORT_HOURLY_HEADERS,
+      })
+      XLSX.utils.book_append_sheet(workbook, hourlyWorksheet, "Detail 24 Jam")
+    }
+
+    const rawData = XLSX.write(workbook, { bookType: "xlsx", type: "array" })
+    const blob = new Blob([rawData], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement("a")
+    anchor.href = url
+    anchor.download = `history-report-${new Date().toISOString().slice(0, 10)}.xlsx`
+    anchor.click()
+    URL.revokeObjectURL(url)
+  }, [weeklyExportRows, weekData])
 
 
   return (
