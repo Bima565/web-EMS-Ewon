@@ -722,21 +722,18 @@ export default function HistoryReport() {
     })
     XLSX.utils.book_append_sheet(workbook, worksheet, "Rekap Mingguan")
 
-    const hourlyRows = (
-      await Promise.all(
-        weekData.map(async (day) => {
-          const dailyDetail =
-            dailyCacheRef.current[day.date] ?? (await fetchDailyReport(day.date).catch(() => null))
-          return buildHourlyExportRows(day, dailyDetail)
-        }),
-      )
-    ).flat()
+    // Loop through each day in weekData to create a separate sheet for daily hourly data
+    for (const day of weekData) {
+      const dailyDetail =
+        dailyCacheRef.current[day.date] ?? (await fetchDailyReport(day.date).catch(() => null))
 
-    if (hourlyRows.length) {
-      const hourlyWorksheet = XLSX.utils.json_to_sheet(hourlyRows, {
-        header: EXPORT_HOURLY_HEADERS,
-      })
-      XLSX.utils.book_append_sheet(workbook, hourlyWorksheet, "Detail 24 Jam")
+      if (dailyDetail) {
+        const hourlyRows = buildHourlyExportRows(day, dailyDetail)
+        if (hourlyRows.length) {
+          // Use day.label for the sheet name, e.g., "Senin"
+          XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(hourlyRows, { header: EXPORT_HOURLY_HEADERS }), day.label);
+        }
+      }
     }
 
     const rawData = XLSX.write(workbook, { bookType: "xlsx", type: "array" })
