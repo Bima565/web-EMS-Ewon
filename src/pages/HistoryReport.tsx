@@ -832,7 +832,7 @@ export default function HistoryReport() {
                         <th>Hari</th>
                         <th>Cost Harian</th>
                         <th>Progress</th>
-                        <th aria-label="Aksi"></th>
+
                       </tr>
                     </thead>
                     <tbody>
@@ -897,13 +897,7 @@ export default function HistoryReport() {
                               </small>
                             </div>
                           </td>
-                          <td>
-                            <div className="history-week-cell history-week-actions">
-                              <button type="button" className="history-week-action">
-                                ⋮
-                              </button>
-                            </div>
-                          </td>
+
                         </tr>
                         )
                       })}
