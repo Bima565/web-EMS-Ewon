@@ -3,10 +3,19 @@ const mysql = require("mysql2")
 const cors = require("cors")
 const path = require("path")
 
+const {
+  createAtc3000ModbusReader,
+  buildTrackedParamValues,
+} = require("./atc3000-modbus")
+
 const app = express()
 
-const PARAM_URL = "http://192.168.100.239/rcgi.bin/ParamForm?AST_Param=$dtIV$flA$ftT"
-const PARAM_AUTH = `Basic ${Buffer.from("admin:Admin123").toString("base64")}`
+const DATA_SOURCE = String(process.env.DATA_SOURCE || "ATC3000").toUpperCase()
+const ATC3000_HOST = process.env.ATC3000_HOST ?? process.env.ATC_MODBUS_HOST ?? "192.168.100.99"
+const ATC3000_PORT = Number(process.env.ATC3000_PORT ?? process.env.ATC_MODBUS_PORT ?? 502)
+const ATC3000_SLAVE_ID = Number(process.env.ATC3000_SLAVE_ID ?? process.env.ATC_MODBUS_SLAVE_ID ?? 2)
+const ATC3000_TIMEOUT_MS = Number(process.env.ATC3000_TIMEOUT_MS ?? process.env.MODBUS_TIMEOUT_MS ?? 4000)
+const ATC3000_WORD_SWAP = process.env.ATC3000_WORD_SWAP ?? process.env.ATC_MODBUS_WORD_SWAP ?? "auto"
 const TRACKED_TAGS = [
   "pm139Status",
   "pm139KWH",
@@ -19,8 +28,7 @@ const TRACKED_TAGS = [
 const WEEK_DAYS = 7
 const RETENTION_DAYS = 14
 const RETENTION_INTERVAL_MS = 6 * 60 * 60 * 1000
-const PARAM_POLL_INTERVAL_MS = 15 * 1000
-const PARAM_FETCH_TIMEOUT_MS = 12 * 1000
+const PARAM_POLL_INTERVAL_MS = Number(process.env.PARAM_POLL_INTERVAL_MS ?? 5 * 1000)
 const PARAM_FETCH_RETRY_DELAY_MS = 1500
 const PARAM_FETCH_MAX_ATTEMPTS = 2
 const PARAM_STALE_THRESHOLD_MS = PARAM_POLL_INTERVAL_MS * 3
@@ -44,6 +52,14 @@ let shutdownPromise = null
 let paramPollTimer = null
 let retentionTimer = null
 let httpServer = null
+
+const atc3000Reader = createAtc3000ModbusReader({
+  host: ATC3000_HOST,
+  port: ATC3000_PORT,
+  slaveId: ATC3000_SLAVE_ID,
+  timeoutMs: ATC3000_TIMEOUT_MS,
+  wordSwapMode: ATC3000_WORD_SWAP,
+})
 
 const paramPollingState = {
   lastSuccessAt: null,
@@ -138,7 +154,11 @@ const isTransientPollingError = (error) => {
     causeCode === "UND_ERR_SOCKET" ||
     causeCode === "UND_ERR_CONNECT_TIMEOUT" ||
     causeCode === "ECONNRESET" ||
-    causeCode === "ETIMEDOUT"
+    causeCode === "ETIMEDOUT" ||
+    error.code === "ECONNREFUSED" ||
+    error.code === "EHOSTUNREACH" ||
+    error.code === "ENETUNREACH" ||
+    error.code === "EPIPE"
   )
 }
 
@@ -198,6 +218,17 @@ const closePool = async (pool, label) => {
   }
 }
 
+const closeAtc3000 = async () => {
+  try {
+    atc3000Reader.close()
+    logLifecycle("atc3000 modbus client closed")
+  } catch (error) {
+    logError("lifecycle", "failed to close atc3000 modbus client", {
+      error: normalizeError(error),
+    })
+  }
+}
+
 const runLoggedQuery = async (pool, scope, operation, sql, params = [], context = {}) => {
   try {
     return await pool.promise().query(sql, params)
@@ -210,23 +241,6 @@ const runLoggedQuery = async (pool, scope, operation, sql, params = [], context 
     throw error
   }
 }
-
-const parseParamLines = (text) =>
-  text
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line && !line.startsWith('"TagId"'))
-    .map((line) => {
-      const cols = line.split(";").map((col) => col.replace(/(^"|"$)/g, ""))
-      return {
-        TagId: Number(cols[0]),
-        TagName: cols[1],
-        Value: Number(cols[2]),
-        AlStatus: Number(cols[3]),
-        AlType: Number(cols[4]),
-        Quality: Number(cols[5]),
-      }
-    })
 
 app.use(cors())
 app.use(express.json())
@@ -383,31 +397,24 @@ const refreshParamSnapshot = async () => {
   for (let attempt = 1; attempt <= PARAM_FETCH_MAX_ATTEMPTS; attempt += 1) {
     try {
       const startedAt = Date.now()
-      const response = await fetch(PARAM_URL, {
-        headers: {
-          Authorization: PARAM_AUTH,
-          Connection: "close",
-        },
-        signal: AbortSignal.timeout(PARAM_FETCH_TIMEOUT_MS),
-      })
 
-      if (!response.ok) {
-        const body = await response.text().catch(() => "unable to read body")
-        throw new Error(
-          `param polling failed with status ${response.status}: ${response.statusText} (${body})`,
-        )
+      if (DATA_SOURCE !== "ATC3000") {
+        throw new Error(`unsupported DATA_SOURCE: ${DATA_SOURCE}`)
       }
 
-      const text = await response.text()
-      const data = parseParamLines(text)
+      const snapshot = await atc3000Reader.readSnapshot()
+      const data = buildTrackedParamValues(TRACKED_TAGS, snapshot.metrics)
 
       latestParamSnapshot.values = data
       latestParamSnapshot.updatedAt = new Date().toISOString()
       paramPollingState.lastSuccessAt = latestParamSnapshot.updatedAt
       paramPollingState.lastErrorMessage = null
       paramPollingState.consecutiveFailures = 0
-      logInfo("ewon-fetch", "param snapshot refreshed", {
-        url: PARAM_URL,
+      logInfo("atc3000-modbus", "param snapshot refreshed", {
+        source: DATA_SOURCE,
+        host: ATC3000_HOST,
+        port: ATC3000_PORT,
+        slaveId: ATC3000_SLAVE_ID,
         entryCount: data.length,
         durationMs: Date.now() - startedAt,
         updatedAt: latestParamSnapshot.updatedAt,
@@ -416,7 +423,7 @@ const refreshParamSnapshot = async () => {
       try {
         await logParamValues(data)
       } catch (error) {
-        logWarn("ewon-fetch", "snapshot fetched but database write failed", {
+        logWarn("atc3000-modbus", "snapshot fetched but database write failed", {
           updatedAt: latestParamSnapshot.updatedAt,
           entryCount: data.length,
           error: normalizeError(error),
@@ -431,8 +438,11 @@ const refreshParamSnapshot = async () => {
         throw error
       }
 
-      logWarn("ewon-fetch", "transient polling failure, retrying", {
-        url: PARAM_URL,
+      logWarn("atc3000-modbus", "transient polling failure, retrying", {
+        source: DATA_SOURCE,
+        host: ATC3000_HOST,
+        port: ATC3000_PORT,
+        slaveId: ATC3000_SLAVE_ID,
         attempt,
         maxAttempts: PARAM_FETCH_MAX_ATTEMPTS,
         retryDelayMs: PARAM_FETCH_RETRY_DELAY_MS,
@@ -450,7 +460,7 @@ const startParamPolling = () => {
     if (isShuttingDown) return
 
     if (isParamPolling) {
-      logWarn("ewon-fetch", "polling skipped because previous fetch is still running", {
+      logWarn("atc3000-modbus", "polling skipped because previous fetch is still running", {
         intervalMs: PARAM_POLL_INTERVAL_MS,
       })
       return
@@ -462,8 +472,11 @@ const startParamPolling = () => {
         paramPollingState.lastErrorAt = new Date().toISOString()
         paramPollingState.lastErrorMessage = formatPollingError(error)
         paramPollingState.consecutiveFailures += 1
-        logError("ewon-fetch", "param polling failed", {
-          url: PARAM_URL,
+        logError("atc3000-modbus", "param polling failed", {
+          source: DATA_SOURCE,
+          host: ATC3000_HOST,
+          port: ATC3000_PORT,
+          slaveId: ATC3000_SLAVE_ID,
           consecutiveFailures: paramPollingState.consecutiveFailures,
           lastErrorAt: paramPollingState.lastErrorAt,
           error: normalizeError(error),
@@ -545,6 +558,21 @@ app.get("/api/panels", async (req, res) => {
 
 // realtime tag
 app.get("/api/realtime", async (req, res) => {
+  if (DATA_SOURCE === "ATC3000") {
+    if (!latestParamSnapshot.values.length) {
+      return res.status(503).json({ message: "Data realtime belum siap dari ATC 3000 (Modbus)" })
+    }
+
+    const created = latestParamSnapshot.updatedAt ?? new Date().toISOString()
+    return res.json(
+      latestParamSnapshot.values.map((param) => ({
+        tagname: param.TagName,
+        tagvalue: param.Value,
+        created,
+      })),
+    )
+  }
+
   try {
     const [result] = await runLoggedQuery(
       db,
@@ -568,6 +596,31 @@ app.get("/api/realtime", async (req, res) => {
 app.get("/api/history/:tag", async (req, res) => {
   const tag = req.params.tag
 
+  if (DATA_SOURCE === "ATC3000") {
+    if (!TRACKED_TAGS.some((tracked) => tracked.toLowerCase() === String(tag).toLowerCase())) {
+      return res.status(404).json({ message: "Tag tidak ditemukan" })
+    }
+
+    try {
+      const [result] = await runLoggedQuery(
+        logsDb,
+        "db-write",
+        "select modbus tag history",
+        "SELECT created_at AS created, value AS tagvalue FROM ewon_tag_logs WHERE tag_name = ? ORDER BY created_at DESC LIMIT 200",
+        [tag],
+        {
+          route: "/api/history/:tag",
+          database: "ewon-logs",
+          tag,
+        },
+      )
+
+      return res.json(result)
+    } catch (error) {
+      return res.status(500).json({ message: "Tidak dapat mengambil history tag" })
+    }
+  }
+
   try {
     const [result] = await runLoggedQuery(
       db,
@@ -590,7 +643,7 @@ app.get("/api/history/:tag", async (req, res) => {
 
 app.get("/api/param-values", (req, res) => {
   if (!latestParamSnapshot.values.length) {
-    logWarn("api", "param values requested before first Ewon snapshot was ready", {
+    logWarn("api", "param values requested before first snapshot was ready", {
       method: req.method,
       path: req.originalUrl,
       paramStatus: paramPollingState.lastErrorMessage ? "error" : "starting",
@@ -598,7 +651,7 @@ app.get("/api/param-values", (req, res) => {
       lastErrorMessage: paramPollingState.lastErrorMessage,
     })
     return res.status(503).json({
-      message: "Data param belum tersedia, sedang mencoba mengambil dari Ewon",
+      message: "Data param belum tersedia, sedang mencoba mengambil dari ATC 3000 (Modbus)",
     })
   }
 
@@ -646,6 +699,14 @@ app.get("/api/health", async (req, res) => {
     timestamp: new Date().toISOString(),
     uptimeSec: Math.round(process.uptime()),
     shuttingDown: isShuttingDown,
+    dataSource: DATA_SOURCE,
+    atc3000: {
+      host: ATC3000_HOST,
+      port: ATC3000_PORT,
+      slaveId: ATC3000_SLAVE_ID,
+      timeoutMs: ATC3000_TIMEOUT_MS,
+      wordSwap: String(ATC3000_WORD_SWAP),
+    },
     paramPolling: {
       status: paramStatus,
       updatedAt: latestParamSnapshot.updatedAt,
@@ -1118,6 +1179,7 @@ const shutdown = (signal, code = 0) => {
 
   shutdownPromise = Promise.allSettled([
     closeHttpServer(),
+    closeAtc3000(),
     closePool(db, "main database"),
     closePool(logsDb, "logs database"),
   ]).finally(() => {
@@ -1157,6 +1219,14 @@ httpServer = app.listen(PORT, () => {
   logInfo("lifecycle", "server listening", {
     url: "http://localhost:" + PORT,
     port: PORT,
+    dataSource: DATA_SOURCE,
+    atc3000: {
+      host: ATC3000_HOST,
+      port: ATC3000_PORT,
+      slaveId: ATC3000_SLAVE_ID,
+      timeoutMs: ATC3000_TIMEOUT_MS,
+      wordSwap: String(ATC3000_WORD_SWAP),
+    },
     pollIntervalMs: PARAM_POLL_INTERVAL_MS,
     retentionDays: RETENTION_DAYS,
   })

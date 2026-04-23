@@ -7,7 +7,7 @@ const ROOT_DIR = path.resolve(__dirname, "..")
 const SERVICE_SCRIPT = path.join(__dirname, "server.js")
 const SERVICE_NAME = "Web Ewon API"
 const SERVICE_DESCRIPTION =
-  "Background service untuk API, polling Ewon, dan logging Web Ewon."
+  "Background service untuk API, polling ATC 3000 (Modbus), dan logging Web Ewon."
 const SERVICE_LOG_DIR = path.join(ROOT_DIR, "logs", "service")
 const VALID_COMMANDS = new Set([
   "install",
@@ -19,6 +19,12 @@ const VALID_COMMANDS = new Set([
 ])
 
 fs.mkdirSync(SERVICE_LOG_DIR, { recursive: true })
+
+const envOrDefault = (name, fallback) => {
+  const value = process.env[name]
+  if (value == null || value === "") return String(fallback)
+  return String(value)
+}
 
 const log = (message) => {
   console.log(`[service-manager] ${message}`)
@@ -66,6 +72,30 @@ const createService = () =>
     workingDirectory: ROOT_DIR,
     logpath: SERVICE_LOG_DIR,
     logmode: "rotate",
+    env: [
+      { name: "DATA_SOURCE", value: envOrDefault("DATA_SOURCE", "ATC3000") },
+      {
+        name: "ATC3000_HOST",
+        value: envOrDefault(
+          "ATC3000_HOST",
+          envOrDefault("ATC_MODBUS_HOST", "192.168.100.99"),
+        ),
+      },
+      { name: "ATC3000_PORT", value: envOrDefault("ATC3000_PORT", envOrDefault("ATC_MODBUS_PORT", "502")) },
+      {
+        name: "ATC3000_SLAVE_ID",
+        value: envOrDefault("ATC3000_SLAVE_ID", envOrDefault("ATC_MODBUS_SLAVE_ID", "2")),
+      },
+      {
+        name: "ATC3000_TIMEOUT_MS",
+        value: envOrDefault("ATC3000_TIMEOUT_MS", envOrDefault("MODBUS_TIMEOUT_MS", "4000")),
+      },
+      {
+        name: "ATC3000_WORD_SWAP",
+        value: envOrDefault("ATC3000_WORD_SWAP", envOrDefault("ATC_MODBUS_WORD_SWAP", "auto")),
+      },
+      { name: "PARAM_POLL_INTERVAL_MS", value: envOrDefault("PARAM_POLL_INTERVAL_MS", "5000") },
+    ],
     wait: 5,
     grow: 0.25,
     maxRestarts: 10,

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import ReactECharts from "echarts-for-react"
-import * as XLSX from "xlsx"
+import * as XLSX from "exceljs"
 import { useLiveParams } from "../hooks/useLiveParams"
 import "./style-HistoryReport.css"
 
