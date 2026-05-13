@@ -70,6 +70,80 @@ const paramPollingState = {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
+const normalizeNumericInput = (value) => {
+  if (value == null) return null
+  if (typeof value === "number") return Number.isFinite(value) ? value : null
+
+  const raw = String(value).trim()
+  if (!raw) return null
+
+  const lastDot = raw.lastIndexOf(".")
+  const lastComma = raw.lastIndexOf(",")
+
+  let normalized = raw
+    .replace(/\s+/g, "")
+    .replace(/[^\d.,\-+]/g, "")
+
+  if (lastComma !== -1 && lastDot !== -1) {
+    // Decide decimal separator based on whichever appears last.
+    if (lastComma > lastDot) {
+      // 10.500,50 -> 10500.50
+      normalized = normalized.replace(/\./g, "").replace(/,/g, ".")
+    } else {
+      // 10,500.50 -> 10500.50
+      normalized = normalized.replace(/,/g, "")
+    }
+  } else if (lastComma !== -1) {
+    // 10500,50 -> 10500.50
+    normalized = normalized.replace(/,/g, ".")
+  } else {
+    // 10500.50 or 10500
+    normalized = normalized
+  }
+
+  const parsed = Number.parseFloat(normalized)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+const roundNumber = (value, fractionDigits = 2) => {
+  if (!Number.isFinite(value)) return null
+  return Number(Number(value).toFixed(fractionDigits))
+}
+
+const formatIdNumber = (value, fractionDigits = 2) => {
+  if (!Number.isFinite(value)) return null
+  return value.toLocaleString("id-ID", {
+    minimumFractionDigits: fractionDigits,
+    maximumFractionDigits: fractionDigits,
+  })
+}
+
+const TAG_VALUE_FORMAT = {
+  pm139VAN: { fractionDigits: 2, unit: "V" },
+  pm139AR: { fractionDigits: 2, unit: "A" },
+  pm139P: { fractionDigits: 2, unit: "kW" },
+  pm139KWH: { fractionDigits: 2, unit: "kWh" },
+  pm139App: { fractionDigits: 1, unit: "kVA" },
+  pm139F: { fractionDigits: 2, unit: "Hz" },
+}
+
+const getTagFormat = (tagName) => TAG_VALUE_FORMAT[tagName] ?? { fractionDigits: 2, unit: null }
+
+const buildValuePresentation = (tagName, rawValue) => {
+  const { fractionDigits, unit } = getTagFormat(tagName)
+  const value = roundNumber(normalizeNumericInput(rawValue), fractionDigits)
+  const formattedNumber = formatIdNumber(value, fractionDigits)
+  const formattedWithUnit = formattedNumber && unit ? `${formattedNumber} ${unit}` : formattedNumber
+
+  return {
+    value,
+    fractionDigits,
+    unit,
+    formattedNumber,
+    formattedWithUnit,
+  }
+}
+
 const toLogLevelMethod = (level) => {
   if (level === "error") return "error"
   if (level === "warn") return "warn"
@@ -361,7 +435,20 @@ const logParamValues = async (params) => {
   if (!params?.length) return
   const filtered = params
     .filter((param) => TRACKED_TAGS.includes(param.TagName))
-    .map((param) => [param.TagName, param.Value])
+    .map((param) => {
+      const { value: rounded } = buildValuePresentation(param.TagName, param.Value)
+
+      if (!Number.isFinite(rounded)) {
+        logWarn("db-write", "skipping non-numeric param value", {
+          tag: param.TagName,
+          value: param.Value,
+        })
+        return null
+      }
+
+      return [param.TagName, rounded]
+    })
+    .filter(Boolean)
 
   if (!filtered.length) return
 
@@ -565,11 +652,17 @@ app.get("/api/realtime", async (req, res) => {
 
     const created = latestParamSnapshot.updatedAt ?? new Date().toISOString()
     return res.json(
-      latestParamSnapshot.values.map((param) => ({
-        tagname: param.TagName,
-        tagvalue: param.Value,
-        created,
-      })),
+      latestParamSnapshot.values.map((param) => {
+        const presentation = buildValuePresentation(param.TagName, param.Value)
+        return {
+          tagname: param.TagName,
+          tagvalue: presentation.value,
+          tagvalueFormatted: presentation.formattedNumber,
+          tagvalueWithUnit: presentation.formattedWithUnit,
+          unit: presentation.unit,
+          created,
+        }
+      }),
     )
   }
 
@@ -586,7 +679,18 @@ app.get("/api/realtime", async (req, res) => {
       },
     )
 
-    res.json(result)
+    res.json(
+      result.map((row) => {
+        const presentation = buildValuePresentation(row.tagname, row.tagvalue)
+        return {
+          ...row,
+          tagvalue: presentation.value,
+          tagvalueFormatted: presentation.formattedNumber,
+          tagvalueWithUnit: presentation.formattedWithUnit,
+          unit: presentation.unit,
+        }
+      }),
+    )
   } catch (error) {
     res.status(500).json({ message: "Tidak dapat mengambil data realtime" })
   }
@@ -615,7 +719,18 @@ app.get("/api/history/:tag", async (req, res) => {
         },
       )
 
-      return res.json(result)
+      return res.json(
+        result.map((row) => {
+          const presentation = buildValuePresentation(tag, row.tagvalue)
+          return {
+            ...row,
+            tagvalue: presentation.value,
+            tagvalueFormatted: presentation.formattedNumber,
+            tagvalueWithUnit: presentation.formattedWithUnit,
+            unit: presentation.unit,
+          }
+        }),
+      )
     } catch (error) {
       return res.status(500).json({ message: "Tidak dapat mengambil history tag" })
     }
@@ -635,7 +750,18 @@ app.get("/api/history/:tag", async (req, res) => {
       },
     )
 
-    res.json(result)
+    res.json(
+      result.map((row) => {
+        const presentation = buildValuePresentation(tag, row.tagvalue)
+        return {
+          ...row,
+          tagvalue: presentation.value,
+          tagvalueFormatted: presentation.formattedNumber,
+          tagvalueWithUnit: presentation.formattedWithUnit,
+          unit: presentation.unit,
+        }
+      }),
+    )
   } catch (error) {
     res.status(500).json({ message: "Tidak dapat mengambil history tag" })
   }
@@ -660,7 +786,18 @@ app.get("/api/param-values", (req, res) => {
   }
   res.setHeader("X-Param-Stale", String(isParamSnapshotStale()))
 
-  res.json(latestParamSnapshot.values)
+  res.json(
+    latestParamSnapshot.values.map((param) => {
+      const presentation = buildValuePresentation(param.TagName, param.Value)
+      return {
+        ...param,
+        Value: presentation.value,
+        ValueFormatted: presentation.formattedNumber,
+        ValueWithUnit: presentation.formattedWithUnit,
+        Unit: presentation.unit,
+      }
+    }),
+  )
 })
 
 app.get("/api/health", async (req, res) => {

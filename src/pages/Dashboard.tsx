@@ -24,11 +24,12 @@ const formatClock = (value: number | null) =>
         hour12: false,
       })
 
-const formatNumber = (value: number | null, maximumFractionDigits = 3) =>
+const formatNumber = (value: number | null, fractionDigits = 2) =>
   value == null
     ? "-"
     : value.toLocaleString("id-ID", {
-        maximumFractionDigits,
+        minimumFractionDigits: fractionDigits,
+        maximumFractionDigits: fractionDigits,
       })
 
 const formatDateTime = (value: string | null) =>
@@ -45,7 +46,7 @@ const formatDateTime = (value: string | null) =>
 const formatKgLabel = (value: number | null) =>
   value == null
     ? "-"
-    : `${value.toLocaleString("id-ID", { maximumFractionDigits: 3 })} kg`
+    : `${value.toLocaleString("id-ID", { minimumFractionDigits: 3, maximumFractionDigits: 3 })} kg`
 
 const formatEmissionFactor = (value: number) =>
   value.toLocaleString("id-ID", {
@@ -200,14 +201,14 @@ export default function Dashboard() {
               </div>
               <div className="dashboard-kwh-value">
                 {latestKwh != null
-                  ? latestKwh.toLocaleString("id-ID", { maximumFractionDigits: 3 })
+                  ? formatNumber(latestKwh, 2)
                   : "—"}
                 <span>kWh</span>
               </div>
             </div>
             <div className="dashboard-kwh-foot">
               <span>Akumulasi 1 jam</span>
-              <strong>{usageDelta.toLocaleString("id-ID", { maximumFractionDigits: 3 })} kWh</strong>
+              <strong>{formatNumber(usageDelta, 2)} kWh</strong>
             </div>
           </article>
 
@@ -274,7 +275,7 @@ export default function Dashboard() {
                     </span>
                     <span className="traffic-metric-value">
                       {metric.value != null
-                        ? metric.value.toLocaleString("id-ID", { maximumFractionDigits: 3 })
+                        ? formatNumber(metric.value, 2)
                         : "—"}{" "}
                       <span className="traffic-metric-unit">{metric.unit}</span>
                     </span>
