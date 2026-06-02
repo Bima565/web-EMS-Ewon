@@ -204,8 +204,8 @@
   margin-top: 1rem;
   padding-top: 1rem;
   border-top: 1px solid rgba(148, 163, 184, 0.2);
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: center;
   gap: 1rem;
   color: rgba(248, 250, 252, 0.65);
@@ -213,6 +213,7 @@
 
 .dashboard-kwh-foot strong {
   color: #f8fafc;
+  text-align: right;
 }
 
 .dashboard-change-card {

@@ -133,7 +133,7 @@ export default function Dashboard() {
   )
 
   const kwhHistory = history.pm139KWH ?? []
-  const latestKwh = kwhHistory.at(-1)?.value ?? null
+  const latestKwhReading = kwhHistory.at(-1)?.value ?? null
   const usageDelta = useMemo(() => {
     if (kwhHistory.length < 2) return 0
     return kwhHistory[kwhHistory.length - 1].value - kwhHistory[0].value
@@ -147,6 +147,7 @@ export default function Dashboard() {
       : "Live 1 jam tersimpan"
 
   const dailyConsumptionKwh = dailySummary?.consumptionKwh ?? null
+  const latestKwh = dailyConsumptionKwh
   const dailyCostEstimate = dailySummary?.costEstimateIdr ?? null
   const dailyCo2eKg = dailySummary?.co2eKg ?? null
   const tariffPerKwh = dailySummary?.tariffPerKwh ?? 1444.7
@@ -192,11 +193,11 @@ export default function Dashboard() {
           </article>
 
           <article className="dashboard-card dashboard-kwh-card">
-            <p className="dashboard-section-label">Cost Predicted</p>
+            <p className="dashboard-section-label">Daily Consumption</p>
             <div className="dashboard-kwh-main">
               <div>
-                <h3 className="dashboard-kwh-title">Total energi live</h3>
-                <p className="dashboard-kwh-caption">Bacaan KWh terbaru dari PM139</p>
+                <h3 className="dashboard-kwh-title">Konsumsi hari ini</h3>
+                <p className="dashboard-kwh-caption">Selisih bacaan awal dan akhir hari dari PM139</p>
               </div>
               <div className="dashboard-kwh-value">
                 {latestKwh != null
@@ -206,7 +207,13 @@ export default function Dashboard() {
               </div>
             </div>
             <div className="dashboard-kwh-foot">
-              <span>Akumulasi 1 jam</span>
+              <span>Bacaan meter kumulatif</span>
+              <strong>
+                {latestKwhReading != null
+                  ? `${latestKwhReading.toLocaleString("id-ID", { maximumFractionDigits: 3 })} kWh`
+                  : "-"}
+              </strong>
+              <span>Akumulasi live 1 jam</span>
               <strong>{usageDelta.toLocaleString("id-ID", { maximumFractionDigits: 3 })} kWh</strong>
             </div>
           </article>
