@@ -34,7 +34,6 @@ const CHART_PARAMETERS: Array<{
   unit?: string
   accent: string
 }> = [
-  { tag: "pm139Status", label: "Status PM139", unit: "", accent: "#22d3ee" },
   { tag: "pm139KWH", label: "Energi", unit: "kWh", accent: "#4ade80" },
   { tag: "pm139AR", label: "Ampere", unit: "A", accent: "#22c55e" },
   { tag: "pm139P", label: "Daya nyata", unit: "kW", accent: "#a855f7" },
@@ -129,23 +128,47 @@ export default function ParamChart() {
 
     loadHistories(true)
 
+    const refreshTimer = window.setInterval(() => {
+      void loadHistories(false)
+    }, 60 * 1000)
+
+    const pruneTimer = window.setInterval(() => {
+      setHistoryOverrides((prev) => {
+        const now = Date.now()
+        const next: Record<string, LiveHistoryRow[]> = {}
+        for (const tag of CHART_TAGS) {
+          next[tag] = pruneEntries(prev[tag] ?? [], now)
+        }
+        return next
+      })
+    }, 30 * 1000)
+
     return () => {
       mounted = false
+      window.clearInterval(refreshTimer)
+      window.clearInterval(pruneTimer)
     }
   }, [])
 
+  const [nowTick, setNowTick] = useState(() => Date.now())
+
+  useEffect(() => {
+    const t = window.setInterval(() => setNowTick(Date.now()), 30 * 1000)
+    return () => window.clearInterval(t)
+  }, [])
+
   const liveHistory = useMemo(() => {
-    const now = Date.now()
     return CHART_TAGS.reduce<Record<string, LiveHistoryRow[]>>((acc, tag) => {
       const shared = (sharedHistory[tag] ?? []).map((entry) => ({
         timestamp: entry.timestamp,
         value: entry.value,
       }))
-      const fallback = historyOverrides[tag] ?? []
-      acc[tag] = pruneEntries(shared.length ? shared : fallback, now)
+      const override = historyOverrides[tag] ?? []
+      const merged = shared.length > 0 ? shared : override
+      acc[tag] = pruneEntries(merged, nowTick)
       return acc
     }, {})
-  }, [historyOverrides, sharedHistory])
+  }, [historyOverrides, sharedHistory, nowTick])
 
   const formatValue = (value: number) =>
     Number.isFinite(value)
@@ -205,114 +228,166 @@ export default function ParamChart() {
 
           const chartOption = hasHistory
             ? (() => {
-                const axisOption = {
-                  type: "category",
-                  boundaryGap: false,
+                const accent = chartParam.accent
+                const accentMid = accent + "55"
+                const accentFade = accent + "18"
+
+                const isStairStep = chartParam.tag === "pm139KWH"
+                const isBar = chartParam.tag === "pm139P" || chartParam.tag === "pm139App"
+                const isFreq = chartParam.tag === "pm139F"
+
+                const commonGrid = { left: 0, right: 6, bottom: 18, top: 8, containLabel: true }
+
+                const commonXAxis = {
+                  type: "category" as const,
+                  boundaryGap: isBar,
                   data: labels,
-                  axisLine: {
-                    lineStyle: { color: "rgba(148,163,184,0.4)" },
-                  },
+                  axisLine: { show: false },
+                  axisTick: { show: false },
                   axisLabel: {
-                    color: "rgba(148,163,184,0.8)",
-                    fontSize: 11,
+                    color: "rgba(148,163,184,0.55)",
+                    fontSize: 9,
+                    interval: Math.max(0, Math.floor(labels.length / 4) - 1),
+                  },
+                  splitLine: { show: false },
+                }
+
+                const commonYAxis = {
+                  type: "value" as const,
+                  axisLine: { show: false },
+                  axisTick: { show: false },
+                  axisLabel: {
+                    color: "rgba(148,163,184,0.55)",
+                    fontSize: 9,
+                    formatter: (v: number) =>
+                      Math.abs(v) >= 1000 ? `${(v / 1000).toFixed(1)}k` : String(v),
+                  },
+                  splitLine: {
+                    lineStyle: { color: "rgba(148,163,184,0.07)", type: "dashed" as const },
                   },
                 }
 
-                const markAreaIndices = {
-                  morningStart: Math.min(6, labels.length - 1),
-                  morningEnd: Math.min(9, labels.length - 1),
-                  eveningStart: Math.min(14, labels.length - 1),
-                  eveningEnd: Math.min(17, labels.length - 1),
+                const commonTooltip = {
+                  trigger: "axis" as const,
+                  backgroundColor: "rgba(2,6,23,0.95)",
+                  borderColor: accent + "44",
+                  borderWidth: 1,
+                  padding: [6, 10],
+                  textStyle: { color: "#f8fafc", fontSize: 11 },
+                  formatter: (params: any[]) => {
+                    const p = params[0]
+                    return `<span style="color:${accent};font-size:13px;font-weight:700">${p.value}</span>&nbsp;<span style="color:rgba(148,163,184,0.7)">${chartParam.unit ?? ""}</span><br/><span style="color:rgba(148,163,184,0.5);font-size:10px">${p.name}</span>`
+                  },
+                }
+
+                const linearFill = {
+                  type: "linear" as const,
+                  x: 0, y: 0, x2: 0, y2: 1,
+                  colorStops: [
+                    { offset: 0, color: accentMid },
+                    { offset: 1, color: accentFade },
+                  ],
+                }
+
+                if (isBar) {
+                  return {
+                    tooltip: commonTooltip,
+                    grid: commonGrid,
+                    xAxis: commonXAxis,
+                    yAxis: commonYAxis,
+                    series: [{
+                      type: "bar" as const,
+                      data: values,
+                      barMaxWidth: 10,
+                      itemStyle: {
+                        color: {
+                          type: "linear" as const,
+                          x: 0, y: 0, x2: 0, y2: 1,
+                          colorStops: [
+                            { offset: 0, color: accent },
+                            { offset: 1, color: accent + "44" },
+                          ],
+                        },
+                        borderRadius: [3, 3, 0, 0],
+                      },
+                      emphasis: { itemStyle: { color: accent } },
+                    }],
+                  }
+                }
+
+                if (isStairStep) {
+                  return {
+                    tooltip: commonTooltip,
+                    grid: commonGrid,
+                    xAxis: commonXAxis,
+                    yAxis: commonYAxis,
+                    series: [{
+                      type: "line" as const,
+                      step: "end" as const,
+                      data: values,
+                      showSymbol: false,
+                      lineStyle: { color: accent, width: 2 },
+                      areaStyle: { color: linearFill },
+                    }],
+                  }
+                }
+
+                if (isFreq) {
+                  const minVal = Math.min(...values)
+                  const maxVal = Math.max(...values)
+                  const mid = (minVal + maxVal) / 2
+                  const pad = Math.max((maxVal - minVal) * 0.6, 0.08)
+                  return {
+                    tooltip: commonTooltip,
+                    grid: commonGrid,
+                    xAxis: commonXAxis,
+                    yAxis: {
+                      ...commonYAxis,
+                      min: parseFloat((mid - pad).toFixed(3)),
+                      max: parseFloat((mid + pad).toFixed(3)),
+                      axisLabel: {
+                        ...commonYAxis.axisLabel,
+                        formatter: (v: number) => v.toFixed(2),
+                      },
+                    },
+                    series: [{
+                      type: "line" as const,
+                      data: values,
+                      smooth: 0.4,
+                      showSymbol: false,
+                      lineStyle: { color: accent, width: 1.5 },
+                      areaStyle: { color: linearFill },
+                      markLine: {
+                        silent: true,
+                        symbol: "none",
+                        data: [{ type: "average" as const }],
+                        lineStyle: { color: accent, type: "dashed" as const, width: 1, opacity: 0.5 },
+                        label: { color: accent, fontSize: 9, formatter: "avg {c} Hz" },
+                      },
+                    }],
+                  }
                 }
 
                 return {
-                  color: [chartParam.accent],
-                  tooltip: {
-                    trigger: "axis",
-                    backgroundColor: "rgba(15,23,42,0.85)",
-                    textStyle: {
-                      color: "#f8fafc",
+                  tooltip: commonTooltip,
+                  grid: commonGrid,
+                  xAxis: commonXAxis,
+                  yAxis: commonYAxis,
+                  series: [{
+                    type: "line" as const,
+                    data: values,
+                    smooth: 0.5,
+                    showSymbol: values.length <= 20,
+                    symbolSize: 4,
+                    symbol: "circle",
+                    itemStyle: { color: accent },
+                    lineStyle: { color: accent, width: 2 },
+                    areaStyle: { color: linearFill },
+                    emphasis: {
+                      scale: true,
+                      itemStyle: { borderWidth: 2, borderColor: "#fff", color: accent },
                     },
-                  },
-                  toolbox: {
-                    show: true,
-                    feature: {
-                      saveAsImage: {},
-                    },
-                  },
-                  grid: {
-                    left: "3%",
-                    right: "3%",
-                    bottom: "6%",
-                    top: "6%",
-                    containLabel: true,
-                  },
-                  xAxis: axisOption,
-                  yAxis: {
-                    type: "value",
-                    axisLine: {
-                      show: false,
-                    },
-                    axisLabel: {
-                      color: "rgba(148,163,184,0.9)",
-                      fontSize: 11,
-                    },
-                    splitLine: {
-                      lineStyle: {
-                        color: "rgba(148,163,184,0.12)",
-                      },
-                    },
-                  },
-                  visualMap: {
-                    show: false,
-                    dimension: 0,
-                    pieces: [
-                      { lte: 6, color: "green" },
-                      { gt: 6, lte: 8, color: "red" },
-                      { gt: 8, lte: 14, color: "green" },
-                      { gt: 14, lte: 17, color: "red" },
-                      { gt: 17, color: "green" },
-                    ],
-                  },
-                  series: [
-                    {
-                      type: "line",
-                      smooth: true,
-                      showSymbol: hasDataToPlot,
-                      symbolSize: 5,
-                      areaStyle: hasDataToPlot
-                        ? { opacity: 0.2, color: chartParam.accent }
-                        : undefined,
-                      lineStyle: {
-                        width: 2,
-                      },
-                      emphasis: {
-                        focus: "series",
-                      },
-                      data: values,
-                      markArea: {
-                        data: [
-                          [
-                            {
-                              name: "Morning Peak",
-                              xAxis: markAreaIndices.morningStart,
-                            },
-                            { xAxis: markAreaIndices.morningEnd },
-                          ],
-                          [
-                            {
-                              name: "Evening Peak",
-                              xAxis: markAreaIndices.eveningStart,
-                            },
-                            { xAxis: markAreaIndices.eveningEnd },
-                          ],
-                        ],
-                        itemStyle: {
-                          color: "rgba(255, 173, 177, 0.3)",
-                        },
-                      },
-                    },
-                  ],
+                  }],
                 }
               })()
             : undefined

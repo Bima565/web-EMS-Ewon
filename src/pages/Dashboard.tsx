@@ -120,17 +120,7 @@ export default function Dashboard() {
     }
   }, [])
 
-  const activeMetrics = useMemo(
-    () =>
-      trafficMetrics.map((metric) => {
-        const match = params.find((param) => param.TagName.toLowerCase() === metric.tag.toLowerCase())
-        return {
-          ...metric,
-          value: match?.Value ?? null,
-        }
-      }),
-    [params],
-  )
+
 
   const kwhHistory = history.pm139KWH ?? []
   const latestKwhReading = kwhHistory.at(-1)?.value ?? null
@@ -256,50 +246,7 @@ export default function Dashboard() {
           </article>
         </section>
 
-        <section className="dashboard-grid">
-          <article className="dashboard-card dashboard-main-card">
-            <div className="dashboard-main-header">
-              <div>
-                <p className="dashboard-main-label">Usage Estimate</p>
-                <h2 className="dashboard-main-title">Aliran daya 1 jam terakhir</h2>
-              </div>
-              <span className="dashboard-main-status">{formatClock(lastSync)}</span>
-            </div>
-            <div className="dashboard-chart-wrapper">
-              <DashboardChart />
-            </div>
-          </article>
 
-          <div className="dashboard-side-column">
-            <article className="dashboard-card dashboard-traffic-card">
-              <p className="dashboard-traffic-label">Energy Intensity</p>
-              <div className="dashboard-traffic-grid">
-                {activeMetrics.map((metric) => (
-                  <div key={metric.tag} className="traffic-metric-card">
-                    <span className={`traffic-metric-label traffic-color-${metric.accent}`}>
-                      {metric.label}
-                    </span>
-                    <span className="traffic-metric-value">
-                      {metric.value != null
-                        ? metric.value.toLocaleString("id-ID", { maximumFractionDigits: 3 })
-                        : "—"}{" "}
-                      <span className="traffic-metric-unit">{metric.unit}</span>
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </article>
-
-            <article className="dashboard-card dashboard-flow-card">
-              <p className="dashboard-flow-label">Live Engine</p>
-              <p className="dashboard-flow-text">
-                Data live sekarang memakai cache frontend bersama, jadi polling tidak bertumpuk
-                antar halaman. Saat reload, dashboard membaca cache lebih dulu lalu melanjutkan
-                update, sehingga grafik tidak kembali dari nol secara acak.
-              </p>
-            </article>
-          </div>
-        </section>
 
         <div className="dashboard-card dashboard-param-panel">
           <ParamChart />

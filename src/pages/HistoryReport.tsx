@@ -751,40 +751,7 @@ export default function HistoryReport() {
 
   return (
     <main className="history-page">
-      <section className="history-live-card">
-        <header className="history-card-header">
-          <div>
-            <p className="history-card-meta">Live</p>
-            <h1 className="history-card-title">Hari ini (Real-time)</h1>
-            <p className="history-card-subtitle">
-              {liveError
-                ? liveError
-                : loadingLive
-                ? "Mengambil nilai terbaru..."
-                : "Update terakhir langsung dari Ewon"}
-            </p>
-          </div>
-          <span className="history-card-status">
-            {loadingLive ? "Memuat..." : `${TRACKED_TAGS.length} tag`}
-          </span>
-        </header>
-        <div className="history-live-grid">
-          {latestParams.length
-            ? latestParams.map((param) => (
-                <article key={param.tag} className="history-live-metric">
-                  <p className="history-live-label">{param.tag}</p>
-                  <p className="history-live-value">
-                    {param.value != null
-                      ? param.value.toLocaleString("id-ID", { maximumFractionDigits: 4 })
-                      : "â€”"}
-                  </p>
-                </article>
-              ))
-            : !loadingLive && !liveError && (
-              <p className="history-live-empty">Tidak ada data real-time.</p>
-            )}
-        </div>
-      </section>
+
       <section className="history-chart-card">
         <header className="history-card-header">
           <div>

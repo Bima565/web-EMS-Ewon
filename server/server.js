@@ -5,7 +5,7 @@ const path = require("path")
 
 const app = express()
 
-const PARAM_URL = "http://192.168.100.239/rcgi.bin/ParamForm?AST_Param=$dtIV$flA$ftT"
+const PARAM_URL = "http://192.168.1.239/rcgi.bin/ParamForm?AST_Param=$dtIV$flA$ftT"
 const PARAM_AUTH = `Basic ${Buffer.from("admin:Admin123").toString("base64")}`
 const TRACKED_TAGS = [
   "pm139Status",
