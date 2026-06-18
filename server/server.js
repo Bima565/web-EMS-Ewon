@@ -228,6 +228,24 @@ const parseParamLines = (text) =>
       }
     })
 
+// Tag yang bukan satuan listrik (status/flag) sehingga tidak perlu diformat 1.000,000
+const NON_MEASUREMENT_TAGS = ["pm139Status"]
+const ELECTRICITY_VALUE_DECIMALS = 3
+
+const isMeasurementTag = (tagName) => !NON_MEASUREMENT_TAGS.includes(tagName)
+
+// Format angka ke gaya Indonesia: titik sebagai pemisah ribuan, koma sebagai desimal.
+// Contoh: 1000 -> "1.000,000"
+const formatElectricityValue = (value, decimals = ELECTRICITY_VALUE_DECIMALS) => {
+  if (value === null || value === undefined || value === "") return null
+  const num = Number(value)
+  if (!Number.isFinite(num)) return null
+  return num.toLocaleString("id-ID", {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  })
+}
+
 app.use(cors())
 app.use(express.json())
 app.use((req, res, next) => {
@@ -309,6 +327,31 @@ const connectTo = (pool, scope, name) => {
 connectTo(db, "db-main", "ewon")
 connectTo(logsDb, "db-write", "ewon-logs")
 
+// Memastikan kolom value_display (nilai listrik dalam format 1.000,000) tersedia
+// di tabel ewon_tag_logs. Kolom value asli (numeric) tetap dipertahankan agar
+// SUM/AVG/MIN/MAX pada query lain tidak rusak.
+const ensureValueDisplayColumn = async () => {
+  try {
+    const [columns] = await logsDb
+      .promise()
+      .query("SHOW COLUMNS FROM ewon_tag_logs LIKE 'value_display'")
+
+    if (columns.length) return
+
+    await logsDb
+      .promise()
+      .query("ALTER TABLE ewon_tag_logs ADD COLUMN value_display VARCHAR(32) NULL AFTER value")
+    logLifecycle("kolom value_display ditambahkan ke ewon_tag_logs")
+  } catch (error) {
+    logError("db-write", "gagal memastikan kolom value_display", {
+      database: "ewon-logs",
+      error: normalizeError(error),
+    })
+  }
+}
+
+void ensureValueDisplayColumn()
+
 const getSlotBucketKey = (date, timeZone) => {
   const formatter = new Intl.DateTimeFormat("en-CA", {
     timeZone,
@@ -347,7 +390,11 @@ const logParamValues = async (params) => {
   if (!params?.length) return
   const filtered = params
     .filter((param) => TRACKED_TAGS.includes(param.TagName))
-    .map((param) => [param.TagName, param.Value])
+    .map((param) => [
+      param.TagName,
+      param.Value,
+      isMeasurementTag(param.TagName) ? formatElectricityValue(param.Value) : null,
+    ])
 
   if (!filtered.length) return
 
@@ -364,7 +411,7 @@ const logParamValues = async (params) => {
     logsDb,
     "db-write",
     "insert ewon_tag_logs",
-    "INSERT INTO ewon_tag_logs (tag_name, value) VALUES ?",
+    "INSERT INTO ewon_tag_logs (tag_name, value, value_display) VALUES ?",
     [filtered],
     {
       database: "ewon-logs",
@@ -558,7 +605,12 @@ app.get("/api/realtime", async (req, res) => {
       },
     )
 
-    res.json(result)
+    res.json(
+      result.map((row) => ({
+        ...row,
+        tagvalue_display: formatElectricityValue(row.tagvalue),
+      })),
+    )
   } catch (error) {
     res.status(500).json({ message: "Tidak dapat mengambil data realtime" })
   }
@@ -582,7 +634,12 @@ app.get("/api/history/:tag", async (req, res) => {
       },
     )
 
-    res.json(result)
+    res.json(
+      result.map((row) => ({
+        ...row,
+        tagvalue_display: formatElectricityValue(row.tagvalue),
+      })),
+    )
   } catch (error) {
     res.status(500).json({ message: "Tidak dapat mengambil history tag" })
   }
@@ -607,7 +664,12 @@ app.get("/api/param-values", (req, res) => {
   }
   res.setHeader("X-Param-Stale", String(isParamSnapshotStale()))
 
-  res.json(latestParamSnapshot.values)
+  res.json(
+    latestParamSnapshot.values.map((item) => ({
+      ...item,
+      ValueDisplay: isMeasurementTag(item.TagName) ? formatElectricityValue(item.Value) : null,
+    })),
+  )
 })
 
 app.get("/api/health", async (req, res) => {
@@ -793,60 +855,70 @@ const buildWeeklyResponse = (statRows, coverageRows, anchorTimestamp) => {
     return totalSlotsPerDay
   }
 
-  const week = Array.from(dayMap.values()).map((day) => ({
-    date: day.date,
-    label: day.label,
-    displayDate: formatPartsToDate(
-      day.displayParts ??
-        getTimeZoneParts(
-          new Date(`${day.date}T00:00:00Z`),
-          REPORT_TIME_ZONE,
-        ),
-    ),
-    stats: TRACKED_TAGS.reduce((acc, tag) => {
-      const entry = day.stats[tag]
-      const avg =
-        entry && entry.count ? Number((entry.sum / entry.count).toFixed(4)) : null
-      acc[tag] = {
-        avg,
-        last: entry?.lastValue ?? null,
-        min: entry?.min ?? null,
-        max: entry?.max ?? null,
-      }
-      return acc
-    }, {}),
-    consumptionKwh: (() => {
-      const entry = day.stats.pm139KWH
-      return normalizeDailyConsumption(entry?.firstValue ?? null, entry?.lastValue ?? null)
-    })(),
-    costEstimateIdr: (() => {
-      const entry = day.stats.pm139KWH
-      const consumptionKwh = normalizeDailyConsumption(entry?.firstValue ?? null, entry?.lastValue ?? null)
-      return consumptionKwh == null ? null : Number((consumptionKwh * KWH_TARIFF).toFixed(2))
-    })(),
-    coverage: (() => {
-      const expectedHours = getExpectedSlotsForDateKey(day.date)
-      let observedHours = 0
-      day.slotCountMap.forEach((tagCount) => {
-        if (tagCount > 0) observedHours += 1
-      })
+  const week = Array.from(dayMap.values()).map((day) => {
+    const kwhEntry = day.stats.pm139KWH
+    const consumptionKwh = normalizeDailyConsumption(
+      kwhEntry?.firstValue ?? null,
+      kwhEntry?.lastValue ?? null,
+    )
+    const costEstimateIdr =
+      consumptionKwh == null ? null : Number((consumptionKwh * KWH_TARIFF).toFixed(2))
 
-      const completeHours = Math.min(expectedHours, observedHours)
-      const missingHours = Math.max(0, expectedHours - completeHours)
-      const progress = expectedHours
-        ? Math.round(Math.min(100, (completeHours / expectedHours) * 100))
-        : 0
+    return {
+      date: day.date,
+      label: day.label,
+      displayDate: formatPartsToDate(
+        day.displayParts ??
+          getTimeZoneParts(
+            new Date(`${day.date}T00:00:00Z`),
+            REPORT_TIME_ZONE,
+          ),
+      ),
+      stats: TRACKED_TAGS.reduce((acc, tag) => {
+        const entry = day.stats[tag]
+        const avg =
+          entry && entry.count ? Number((entry.sum / entry.count).toFixed(4)) : null
+        const measurement = isMeasurementTag(tag)
+        acc[tag] = {
+          avg,
+          avgDisplay: measurement ? formatElectricityValue(avg) : null,
+          last: entry?.lastValue ?? null,
+          lastDisplay: measurement ? formatElectricityValue(entry?.lastValue ?? null) : null,
+          min: entry?.min ?? null,
+          minDisplay: measurement ? formatElectricityValue(entry?.min ?? null) : null,
+          max: entry?.max ?? null,
+          maxDisplay: measurement ? formatElectricityValue(entry?.max ?? null) : null,
+        }
+        return acc
+      }, {}),
+      consumptionKwh,
+      consumptionKwhDisplay: formatElectricityValue(consumptionKwh),
+      costEstimateIdr,
+      costEstimateIdrDisplay: formatElectricityValue(costEstimateIdr, 2),
+      coverage: (() => {
+        const expectedHours = getExpectedSlotsForDateKey(day.date)
+        let observedHours = 0
+        day.slotCountMap.forEach((tagCount) => {
+          if (tagCount > 0) observedHours += 1
+        })
 
-      return {
-        expectedHours,
-        loggedHours: Math.min(expectedHours, observedHours),
-        completeHours,
-        missingHours,
-        progress,
-        hasLoss: missingHours > 0,
-      }
-    })(),
-  }))
+        const completeHours = Math.min(expectedHours, observedHours)
+        const missingHours = Math.max(0, expectedHours - completeHours)
+        const progress = expectedHours
+          ? Math.round(Math.min(100, (completeHours / expectedHours) * 100))
+          : 0
+
+        return {
+          expectedHours,
+          loggedHours: Math.min(expectedHours, observedHours),
+          completeHours,
+          missingHours,
+          progress,
+          hasLoss: missingHours > 0,
+        }
+      })(),
+    }
+  })
 
   return { tags: TRACKED_TAGS, week }
 }
@@ -966,6 +1038,9 @@ app.get("/api/logs/day/:date", async (req, res) => {
       detail[row.tag_name].push({
         timestamp: new Date(row.created_at).toISOString(),
         value: Number(row.value),
+        valueDisplay: isMeasurementTag(row.tag_name)
+          ? formatElectricityValue(row.value)
+          : null,
       })
     })
     res.json({ date, tags: detail })
@@ -1026,10 +1101,15 @@ app.get("/api/logs/summary/daily", async (req, res) => {
       tariffPerKwh: KWH_TARIFF,
       recordCount: rows.length,
       startReading,
+      startReadingDisplay: formatElectricityValue(startReading),
       endReading,
+      endReadingDisplay: formatElectricityValue(endReading),
       consumptionKwh,
+      consumptionKwhDisplay: formatElectricityValue(consumptionKwh),
       costEstimateIdr,
+      costEstimateIdrDisplay: formatElectricityValue(costEstimateIdr, 2),
       co2eKg,
+      co2eKgDisplay: formatElectricityValue(co2eKg),
       firstTimestamp: firstRow ? new Date(firstRow.created_at).toISOString() : null,
       lastTimestamp: lastRow ? new Date(lastRow.created_at).toISOString() : null,
     })
