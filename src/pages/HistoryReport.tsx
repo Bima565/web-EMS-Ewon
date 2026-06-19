@@ -17,14 +17,20 @@ type WeeklyDay = {
   date: string
   label: string
   consumptionKwh?: number | null
+  consumptionKwhDisplay?: string | null
   costEstimateIdr?: number | null
+  costEstimateIdrDisplay?: string | null
   stats: Record<
     string,
     {
       avg: number | null
+      avgDisplay?: string | null
       last: number | null
+      lastDisplay?: string | null
       min: number | null
+      minDisplay?: string | null
       max: number | null
+      maxDisplay?: string | null
     }
   >
   displayDate?: string
@@ -45,12 +51,12 @@ type WeeklyResponse = {
 
 type DailyResponse = {
   date: string
-  tags: Record<string, Array<{ timestamp: string; value: number }>>
+  tags: Record<string, Array<{ timestamp: string; value: number; valueDisplay?: string | null }>>
 }
 
 type WeeklyTableRow = {
   day: WeeklyDay
-  tagDetails: Array<{ tag: string; value: number | null }>
+  tagDetails: Array<{ tag: string; value: number | null; displayValue: string | null }>
   costEstimateIdr: number | null
   progress: number
   progressText: string
@@ -81,6 +87,7 @@ type HourlyMetricPoint = {
   hour: number
   label: string
   value: number | null
+  displayValue: string | null
 }
 
 const API_BASE = "http://localhost:3000"
@@ -90,6 +97,11 @@ const WEEKLY_FETCH_TIMEOUT_MS = 12000
 const REPORT_TIME_ZONE = "Asia/Jakarta"
 
 const HISTORY_REPORT_CACHE_KEY = "web-ewon:history-report:v3"
+
+// Faktor emisi grid listrik Indonesia (kg CO2e per kWh), dipakai sebagai referensi
+// untuk menurunkan Emisi Karbon dari konsumsi kWh — selaras dengan ringkasan CO2e
+// pada Dashboard. Sesuaikan bila backend ewon-logs memakai faktor berbeda.
+const CO2E_EMISSION_FACTOR_KG_PER_KWH = 0.794
 
 const DAY_DETAIL_CONFIG: DayDetailMetricConfig[] = [
   {
@@ -158,6 +170,7 @@ const EXPORT_WEEKLY_HEADERS = [
   "Hari",
   "Tanggal",
   "Cost Harian (Rp)",
+  "Emisi Karbon (kg CO2e)",
   "Progress (%)",
   ...DAY_DETAIL_CONFIG.map((metric) => `${metric.label} (${metric.unit})`),
 ]
@@ -191,6 +204,27 @@ const formatCurrencyValue = (value: number | null) =>
   value != null
     ? `Rp${value.toLocaleString("id-ID", { maximumFractionDigits: 0 })}`
     : "-"
+
+// Hitung emisi karbon (kg CO2e) dari konsumsi kWh harian sebagai referensi laporan.
+const computeCo2eKg = (consumptionKwh: number | null | undefined) =>
+  consumptionKwh != null && Number.isFinite(consumptionKwh)
+    ? consumptionKwh * CO2E_EMISSION_FACTOR_KG_PER_KWH
+    : null
+
+const formatCo2eValue = (value: number | null) =>
+  value != null
+    ? `${value.toLocaleString("id-ID", { minimumFractionDigits: 3, maximumFractionDigits: 3 })} kg CO₂e`
+    : "-"
+
+// Fallback format Indonesia (titik ribuan, koma desimal) untuk angka yang dihitung
+// di frontend (misalnya rata-rata per jam) dan belum punya value_display dari backend.
+const formatLocaleNumber = (value: number | null, decimals = 3) =>
+  value != null
+    ? value.toLocaleString("id-ID", {
+        minimumFractionDigits: decimals,
+        maximumFractionDigits: decimals,
+      })
+    : null
 
 const formatMetricValue = (
   value: number | null,
@@ -234,12 +268,14 @@ const getDateKeyInTimeZone = (date: Date, timeZone: string) => {
 }
 
 const buildHourlySeries = (
-  entries: Array<{ timestamp: string; value: number }>,
+  entries: Array<{ timestamp: string; value: number; valueDisplay?: string | null }>,
   summaryMode: "avg" | "last",
+  decimals = 3,
 ) => {
   const buckets = Array.from({ length: 24 }, (_, hour) => ({
     hour,
     values: [] as number[],
+    displays: [] as Array<string | null | undefined>,
   }))
 
   entries.forEach((entry) => {
@@ -247,21 +283,29 @@ const buildHourlySeries = (
     const bucket = buckets[hour]
     if (!bucket) return
     bucket.values.push(Number(entry.value))
+    bucket.displays.push(entry.valueDisplay)
   })
 
   return buckets.map((bucket) => {
-    const value =
-      bucket.values.length === 0
-        ? null
-        : summaryMode === "last"
-        ? bucket.values.at(-1) ?? null
-        : bucket.values.reduce((acc, current) => acc + current, 0) / bucket.values.length
+    const label = `${String(bucket.hour).padStart(2, "0")}:00`
 
-    return {
-      hour: bucket.hour,
-      label: `${String(bucket.hour).padStart(2, "0")}:00`,
-      value,
+    if (bucket.values.length === 0) {
+      return { hour: bucket.hour, label, value: null, displayValue: null }
     }
+
+    if (summaryMode === "last") {
+      const value = bucket.values.at(-1) ?? null
+      const displayValue = bucket.displays.at(-1) ?? formatLocaleNumber(value, decimals)
+      return { hour: bucket.hour, label, value, displayValue: displayValue ?? null }
+    }
+
+    const value = bucket.values.reduce((acc, current) => acc + current, 0) / bucket.values.length
+    // value_display dari backend hanya valid kalau bucket ini cuma 1 entry (tidak perlu di-average lagi).
+    const displayValue =
+      bucket.values.length === 1
+        ? bucket.displays[0] ?? formatLocaleNumber(value, decimals)
+        : formatLocaleNumber(value, decimals)
+    return { hour: bucket.hour, label, value, displayValue: displayValue ?? null }
   }) as HourlyMetricPoint[]
 }
 
@@ -272,7 +316,7 @@ const buildHourlyExportRows = (day: WeeklyDay, dailyDetail: DailyResponse | null
     )
     return {
       metric,
-      series: buildHourlySeries(rawEntries, metric.summaryMode),
+      series: buildHourlySeries(rawEntries, metric.summaryMode, metric.decimals ?? 3),
     }
   })
 
@@ -285,7 +329,7 @@ const buildHourlyExportRows = (day: WeeklyDay, dailyDetail: DailyResponse | null
 
     metricSeries.forEach(({ metric, series }) => {
       const columnName = `${metric.label} (${metric.unit})`
-      record[columnName] = series[hour]?.value ?? null
+      record[columnName] = series[hour]?.displayValue ?? null
     })
 
     return record
@@ -446,6 +490,8 @@ export default function HistoryReport() {
       const tagDetails = TRACKED_TAGS.map((tag) => ({
         tag,
         value: day.stats[tag]?.last ?? null,
+        displayValue:
+          day.stats[tag]?.lastDisplay ?? formatLocaleNumber(day.stats[tag]?.last ?? null),
       }))
       const progress =
         typeof day.coverage?.progress === "number" ? day.coverage.progress : 0
@@ -474,12 +520,13 @@ export default function HistoryReport() {
         Hari: row.day.label,
         Tanggal: row.day.displayDate ?? row.day.date,
         "Cost Harian (Rp)": formatCurrencyValue(row.costEstimateIdr),
+        "Emisi Karbon (kg CO2e)": formatCo2eValue(computeCo2eKg(row.day.consumptionKwh)),
         "Progress (%)": row.progress,
       }
       row.tagDetails.forEach((detail) => {
         const metric = DAY_DETAIL_CONFIG.find((item) => item.tag === detail.tag)
         const columnName = metric ? `${metric.label} (${metric.unit})` : detail.tag
-        record[columnName] = detail.value ?? null
+        record[columnName] = detail.displayValue ?? null
       })
       return record
     })
@@ -546,15 +593,46 @@ export default function HistoryReport() {
     const rawEntries = (dailyDetail?.tags[selectedHourlyMetric.tag] ?? []).filter((entry) =>
       Number.isFinite(entry.value),
     )
-    return buildHourlySeries(rawEntries, selectedHourlyMetric.summaryMode)
-  }, [dailyDetail, selectedHourlyMetric.tag, selectedHourlyMetric.summaryMode])
+    return buildHourlySeries(rawEntries, selectedHourlyMetric.summaryMode, selectedHourlyMetric.decimals ?? 3)
+  }, [dailyDetail, selectedHourlyMetric.tag, selectedHourlyMetric.summaryMode, selectedHourlyMetric.decimals])
 
   const hourlyChartOption = useMemo(() => {
     const values = hourlySeries.map((point) => point.value)
     const numericValues = values.filter((value): value is number => value != null)
-    const maxValue = numericValues.length ? Math.max(...numericValues) : 0
     const benchmark = selectedHourlyMetric.standard
     const seriesColor = selectedHourlyMetric.color
+
+    // Rentang Y otomatis yang menempel ke data aktual supaya garis berada di tengah
+    // area chart dan fluktuasi kecil tetap terlihat (tidak gepeng di dasar grafik).
+    // Contoh: tegangan rata-rata ~240 V -> sumbu kira-kira 220..260, bukan 0..300.
+    const yRange = (() => {
+      if (!numericValues.length) return { min: undefined as number | undefined, max: undefined as number | undefined }
+      const dataMin = Math.min(...numericValues)
+      const dataMax = Math.max(...numericValues)
+      const span = dataMax - dataMin
+      const decimals = selectedHourlyMetric.decimals ?? 3
+      // Padding ~40% dari rentang data supaya garis duduk di tengah, dengan
+      // padding minimum agar data nyaris datar tidak menjadi garis tipis.
+      const minPad = Math.max(Math.abs(dataMax) * 0.01, 10 ** -decimals)
+      const pad = Math.max(span * 0.4, minPad)
+      let lo = dataMin - pad
+      let hi = dataMax + pad
+      // Bulatkan ke angka "cantik" berdasar besaran nilai (mis. kelipatan 10 utk volt).
+      const magnitude = Math.max(Math.abs(dataMin), Math.abs(dataMax), 1)
+      const step =
+        magnitude >= 100 ? 10 :
+        magnitude >= 10 ? 1 :
+        magnitude >= 1 ? 0.5 :
+        10 ** -decimals
+      lo = Math.floor(lo / step) * step
+      hi = Math.ceil(hi / step) * step
+      if (lo === hi) {
+        lo -= step
+        hi += step
+      }
+      const round = (v: number) => parseFloat(v.toFixed(4))
+      return { min: round(lo), max: round(hi) }
+    })()
 
     return {
       backgroundColor: "transparent",
@@ -579,6 +657,18 @@ export default function HistoryReport() {
             color: "rgba(148, 163, 184, 0.6)",
           },
         },
+        formatter: (params: unknown) => {
+          const items = Array.isArray(params) ? params : [params]
+          return items
+            .map((item: any) => {
+              const point = hourlySeries[item.dataIndex]
+              const displayValue = point?.displayValue ?? "-"
+              return `${item.axisValueLabel ?? item.name}<br/>${item.marker ?? ""}${
+                item.seriesName
+              }: <strong>${displayValue} ${selectedHourlyMetric.unit}</strong>`
+            })
+            .join("")
+        },
       },
       xAxis: {
         type: "category",
@@ -599,8 +689,8 @@ export default function HistoryReport() {
       },
       yAxis: {
         type: "value",
-        scale: true,
-        max: benchmark ? Math.max(maxValue, benchmark) * 1.15 : maxValue * 1.15 || undefined,
+        min: yRange.min,
+        max: yRange.max,
         splitNumber: 4,
         axisLabel: {
           color: "rgba(226, 232, 240, 0.72)",
@@ -643,7 +733,7 @@ export default function HistoryReport() {
               ],
             },
           },
-          markLine: benchmark
+          markLine: benchmark && (yRange.min == null || yRange.max == null || (benchmark >= yRange.min && benchmark <= yRange.max))
             ? {
                 symbol: "none",
                 label: {
@@ -675,7 +765,7 @@ export default function HistoryReport() {
             ]
           : [],
     }
-  }, [hourlySeries, selectedHourlyMetric.color, selectedHourlyMetric.label, selectedHourlyMetric.standard])
+  }, [hourlySeries, selectedHourlyMetric.color, selectedHourlyMetric.label, selectedHourlyMetric.standard, selectedHourlyMetric.unit, selectedHourlyMetric.decimals])
 
   const dailyBarMetrics = useMemo<DayDetailMetric[]>(() => {
     return DAY_DETAIL_CONFIG.map((config) => {
@@ -798,6 +888,7 @@ export default function HistoryReport() {
                       <tr>
                         <th>Hari</th>
                         <th>Cost Harian</th>
+                        <th>Emisi Karbon</th>
                         <th>Progress</th>
 
                       </tr>
@@ -826,6 +917,12 @@ export default function HistoryReport() {
                             <div className="history-week-cell history-week-average">
                               <strong>{formatCurrencyValue(costEstimateIdr)}</strong>
                               <small>estimasi biaya kWh</small>
+                            </div>
+                          </td>
+                          <td>
+                            <div className="history-week-cell history-week-emission">
+                              <strong>{formatCo2eValue(computeCo2eKg(day.consumptionKwh))}</strong>
+                              <small>faktor {CO2E_EMISSION_FACTOR_KG_PER_KWH.toLocaleString("id-ID", { minimumFractionDigits: 3, maximumFractionDigits: 3 })} kg/kWh</small>
                             </div>
                           </td>
                           <td>

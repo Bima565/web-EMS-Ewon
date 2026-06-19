@@ -33,16 +33,45 @@ const CHART_PARAMETERS: Array<{
   label: string
   unit?: string
   accent: string
+  decimals: number
+  zoomPaddingRatio: number
+  zoomMinPad: number
 }> = [
-  { tag: "pm139KWH", label: "Energi", unit: "kWh", accent: "#4ade80" },
-  { tag: "pm139AR", label: "Ampere", unit: "A", accent: "#22c55e" },
-  { tag: "pm139P", label: "Daya nyata", unit: "kW", accent: "#a855f7" },
-  { tag: "pm139App", label: "Daya semu", unit: "kVA", accent: "#f97316" },
-  { tag: "pm139VAN", label: "Tegangan VAN", unit: "V", accent: "#38bdf8" },
-  { tag: "pm139F", label: "Frekuensi", unit: "Hz", accent: "#facc15" },
+  { tag: "pm139KWH", label: "Energi", unit: "kWh", accent: "#4ade80", decimals: 3, zoomPaddingRatio: 0.35, zoomMinPad: 0.01 },
+  { tag: "pm139AR", label: "Ampere", unit: "A", accent: "#22c55e", decimals: 3, zoomPaddingRatio: 0.35, zoomMinPad: 0.02 },
+  { tag: "pm139P", label: "Daya nyata", unit: "kW", accent: "#a855f7", decimals: 3, zoomPaddingRatio: 0.35, zoomMinPad: 0.01 },
+  { tag: "pm139App", label: "Daya semu", unit: "kVA", accent: "#f97316", decimals: 3, zoomPaddingRatio: 0.35, zoomMinPad: 0.01 },
+  { tag: "pm139VAN", label: "Tegangan VAN", unit: "V", accent: "#38bdf8", decimals: 1, zoomPaddingRatio: 0.5, zoomMinPad: 1 },
+  { tag: "pm139F", label: "Frekuensi", unit: "Hz", accent: "#facc15", decimals: 2, zoomPaddingRatio: 0.6, zoomMinPad: 0.08 },
 ]
 
 const CHART_TAGS = CHART_PARAMETERS.map((parameter) => parameter.tag)
+
+// Format angka ke gaya Indonesia (titik ribuan, koma desimal) untuk axis & tooltip ECharts.
+const formatAxisNumber = (value: number, decimals: number) =>
+  value.toLocaleString("id-ID", {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  })
+
+const formatTooltipNumber = (value: number, decimals: number) =>
+  Number.isFinite(value) ? formatAxisNumber(value, decimals) : "-"
+
+// Hitung rentang sumbu Y yang "di-zoom" ke sekitar data aktual (bukan dari 0),
+// supaya lonjakan kecil pada parameter yang nilainya relatif rapat (mis. tegangan,
+// arus, frekuensi) tetap kelihatan jelas alih-alih tampak rata.
+const computeZoomedRange = (values: number[], paddingRatio: number, minPad: number) => {
+  if (!values.length) return null
+  const minVal = Math.min(...values)
+  const maxVal = Math.max(...values)
+  const mid = (minVal + maxVal) / 2
+  const span = maxVal - minVal
+  const pad = Math.max(span * paddingRatio, minPad)
+  return {
+    min: parseFloat((mid - pad).toFixed(4)),
+    max: parseFloat((mid + pad).toFixed(4)),
+  }
+}
 
 const isWithinWindow = (timestamp: number, now: number) => timestamp >= now - HISTORY_WINDOW_MS
 
@@ -233,14 +262,19 @@ export default function ParamChart() {
                 const accentFade = accent + "18"
 
                 const isStairStep = chartParam.tag === "pm139KWH"
-                const isBar = chartParam.tag === "pm139P" || chartParam.tag === "pm139App"
                 const isFreq = chartParam.tag === "pm139F"
 
                 const commonGrid = { left: 0, right: 6, bottom: 18, top: 8, containLabel: true }
 
+                const zoomRange = computeZoomedRange(
+                  values,
+                  chartParam.zoomPaddingRatio,
+                  chartParam.zoomMinPad,
+                )
+
                 const commonXAxis = {
                   type: "category" as const,
-                  boundaryGap: isBar,
+                  boundaryGap: false,
                   data: labels,
                   axisLine: { show: false },
                   axisTick: { show: false },
@@ -254,13 +288,16 @@ export default function ParamChart() {
 
                 const commonYAxis = {
                   type: "value" as const,
+                  ...(zoomRange ?? {}),
                   axisLine: { show: false },
                   axisTick: { show: false },
                   axisLabel: {
                     color: "rgba(148,163,184,0.55)",
                     fontSize: 9,
                     formatter: (v: number) =>
-                      Math.abs(v) >= 1000 ? `${(v / 1000).toFixed(1)}k` : String(v),
+                      Math.abs(v) >= 1000
+                        ? `${(v / 1000).toLocaleString("id-ID", { maximumFractionDigits: 1 })}k`
+                        : formatAxisNumber(v, chartParam.decimals),
                   },
                   splitLine: {
                     lineStyle: { color: "rgba(148,163,184,0.07)", type: "dashed" as const },
@@ -276,7 +313,8 @@ export default function ParamChart() {
                   textStyle: { color: "#f8fafc", fontSize: 11 },
                   formatter: (params: any[]) => {
                     const p = params[0]
-                    return `<span style="color:${accent};font-size:13px;font-weight:700">${p.value}</span>&nbsp;<span style="color:rgba(148,163,184,0.7)">${chartParam.unit ?? ""}</span><br/><span style="color:rgba(148,163,184,0.5);font-size:10px">${p.name}</span>`
+                    const displayValue = formatTooltipNumber(Number(p.value), chartParam.decimals)
+                    return `<span style="color:${accent};font-size:13px;font-weight:700">${displayValue}</span>&nbsp;<span style="color:rgba(148,163,184,0.7)">${chartParam.unit ?? ""}</span><br/><span style="color:rgba(148,163,184,0.5);font-size:10px">${p.name}</span>`
                   },
                 }
 
@@ -287,32 +325,6 @@ export default function ParamChart() {
                     { offset: 0, color: accentMid },
                     { offset: 1, color: accentFade },
                   ],
-                }
-
-                if (isBar) {
-                  return {
-                    tooltip: commonTooltip,
-                    grid: commonGrid,
-                    xAxis: commonXAxis,
-                    yAxis: commonYAxis,
-                    series: [{
-                      type: "bar" as const,
-                      data: values,
-                      barMaxWidth: 10,
-                      itemStyle: {
-                        color: {
-                          type: "linear" as const,
-                          x: 0, y: 0, x2: 0, y2: 1,
-                          colorStops: [
-                            { offset: 0, color: accent },
-                            { offset: 1, color: accent + "44" },
-                          ],
-                        },
-                        borderRadius: [3, 3, 0, 0],
-                      },
-                      emphasis: { itemStyle: { color: accent } },
-                    }],
-                  }
                 }
 
                 if (isStairStep) {
@@ -333,23 +345,11 @@ export default function ParamChart() {
                 }
 
                 if (isFreq) {
-                  const minVal = Math.min(...values)
-                  const maxVal = Math.max(...values)
-                  const mid = (minVal + maxVal) / 2
-                  const pad = Math.max((maxVal - minVal) * 0.6, 0.08)
                   return {
                     tooltip: commonTooltip,
                     grid: commonGrid,
                     xAxis: commonXAxis,
-                    yAxis: {
-                      ...commonYAxis,
-                      min: parseFloat((mid - pad).toFixed(3)),
-                      max: parseFloat((mid + pad).toFixed(3)),
-                      axisLabel: {
-                        ...commonYAxis.axisLabel,
-                        formatter: (v: number) => v.toFixed(2),
-                      },
-                    },
+                    yAxis: commonYAxis,
                     series: [{
                       type: "line" as const,
                       data: values,
@@ -362,7 +362,12 @@ export default function ParamChart() {
                         symbol: "none",
                         data: [{ type: "average" as const }],
                         lineStyle: { color: accent, type: "dashed" as const, width: 1, opacity: 0.5 },
-                        label: { color: accent, fontSize: 9, formatter: "avg {c} Hz" },
+                        label: {
+                          color: accent,
+                          fontSize: 9,
+                          formatter: (p: any) =>
+                            `avg ${formatAxisNumber(Number(p.value), chartParam.decimals)} Hz`,
+                        },
                       },
                     }],
                   }
@@ -443,5 +448,3 @@ export default function ParamChart() {
     </section>
   )
 }
-
-
