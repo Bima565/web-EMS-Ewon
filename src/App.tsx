@@ -1,13 +1,11 @@
 import { useEffect } from "react"
 import { HashRouter, Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom"
 import Dashboard from "./pages/Dashboard.tsx"
-import Panels from "./pages/Panels.tsx"
 import HistoryReport from "./pages/HistoryReport.tsx"
 import "./App.css"
 
 const navItems = [
   { to: "/dashboard", label: "Dasbor", description: "Ringkasan real-time" },
-  { to: "/tagdesc", label: "Tagdesc", description: "Detil panel" },
   { to: "/history", label: "History Report", description: "Riwayat pemakaian" },
 ]
 
@@ -51,7 +49,6 @@ function AppLayout() {
           <Routes>
             <Route index element={<Navigate to="/dashboard" replace />} />
             <Route path="/dashboard" element={<Dashboard />} />
-            <Route path="/tagdesc" element={<Panels />} />
             <Route path="/history" element={<HistoryReport />} />
             <Route path="*" element={<Navigate to="/dashboard" replace />} />
           </Routes>
